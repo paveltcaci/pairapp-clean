@@ -1,0 +1,2571 @@
+diff --git a/pairapp_mobile/lib/app/app_shell.dart b/pairapp_mobile/lib/app/app_shell.dart
+new file mode 100644
+index 0000000..d53b872
+--- /dev/null
++++ b/pairapp_mobile/lib/app/app_shell.dart
+@@ -0,0 +1,163 @@
++import 'package:flutter/material.dart';
++import '../theme/app_colors.dart';
++import '../features/home/home_screen.dart';
++import '../features/issues/issues_screen.dart';
++import '../features/activities/activities_screen.dart';
++import '../features/profile/profile_screen.dart';
++import '../features/create_issue/create_issue_screen.dart';
++
++class AppShell extends StatefulWidget {
++  const AppShell({super.key});
++
++  @override
++  State<AppShell> createState() => _AppShellState();
++}
++
++class _AppShellState extends State<AppShell> {
++  int _currentIndex = 0;
++
++  final List<Widget> _screens = const [
++    HomeScreen(),
++    IssuesScreen(),
++    SizedBox(), // placeholder for FAB
++    ActivitiesScreen(),
++    ProfileScreen(),
++  ];
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      backgroundColor: AppColors.bgDeep,
++      body: IndexedStack(
++        index: _currentIndex == 2 ? 0 : _currentIndex,
++        children: [
++          const HomeScreen(),
++          const IssuesScreen(),
++          const ActivitiesScreen(),
++          const ProfileScreen(),
++        ],
++      ),
++      bottomNavigationBar: _buildBottomNav(context),
++      floatingActionButton: _buildFAB(context),
++      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
++    );
++  }
++
++  Widget _buildBottomNav(BuildContext context) {
++    return Container(
++      decoration: const BoxDecoration(
++        color: AppColors.bgSurface,
++        border: Border(top: BorderSide(color: AppColors.bgCardLight, width: 1)),
++      ),
++      child: SafeArea(
++        child: SizedBox(
++          height: 60,
++          child: Row(
++            children: [
++              _NavItem(
++                icon: Icons.home_outlined,
++                activeIcon: Icons.home,
++                label: 'Главная',
++                isSelected: _currentIndex == 0,
++                onTap: () => setState(() => _currentIndex = 0),
++              ),
++              _NavItem(
++                icon: Icons.warning_amber_outlined,
++                activeIcon: Icons.warning_amber_rounded,
++                label: 'Проблемы',
++                isSelected: _currentIndex == 1,
++                onTap: () => setState(() => _currentIndex = 1),
++              ),
++              const Expanded(child: SizedBox()), // space for FAB
++              _NavItem(
++                icon: Icons.local_activity_outlined,
++                activeIcon: Icons.local_activity,
++                label: 'Активности',
++                isSelected: _currentIndex == 3,
++                onTap: () => setState(() => _currentIndex = 3),
++              ),
++              _NavItem(
++                icon: Icons.person_outline,
++                activeIcon: Icons.person,
++                label: 'Профиль',
++                isSelected: _currentIndex == 4,
++                onTap: () => setState(() => _currentIndex = 4),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildFAB(BuildContext context) {
++    return GestureDetector(
++      onTap: () => Navigator.push(
++        context,
++        MaterialPageRoute(builder: (_) => const CreateIssueScreen()),
++      ),
++      child: Container(
++        width: 56,
++        height: 56,
++        margin: const EdgeInsets.only(top: 28),
++        decoration: BoxDecoration(
++          gradient: AppColors.purpleGradient,
++          shape: BoxShape.circle,
++          boxShadow: [
++            BoxShadow(
++              color: AppColors.purple.withValues(alpha: 0.5),
++              blurRadius: 16,
++              offset: const Offset(0, 4),
++            ),
++          ],
++        ),
++        child: const Icon(Icons.add, color: Colors.white, size: 28),
++      ),
++    );
++  }
++}
++
++class _NavItem extends StatelessWidget {
++  final IconData icon;
++  final IconData activeIcon;
++  final String label;
++  final bool isSelected;
++  final VoidCallback onTap;
++
++  const _NavItem({
++    required this.icon,
++    required this.activeIcon,
++    required this.label,
++    required this.isSelected,
++    required this.onTap,
++  });
++
++  @override
++  Widget build(BuildContext context) {
++    return Expanded(
++      child: GestureDetector(
++        onTap: onTap,
++        behavior: HitTestBehavior.opaque,
++        child: Column(
++          mainAxisAlignment: MainAxisAlignment.center,
++          children: [
++            Icon(
++              isSelected ? activeIcon : icon,
++              color: isSelected ? AppColors.purple : AppColors.textMuted,
++              size: 22,
++            ),
++            const SizedBox(height: 3),
++            Text(
++              label,
++              style: TextStyle(
++                fontSize: 10,
++                color: isSelected ? AppColors.purple : AppColors.textMuted,
++                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
++              ),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++}
+diff --git a/pairapp_mobile/lib/features/activities/activities_screen.dart b/pairapp_mobile/lib/features/activities/activities_screen.dart
+new file mode 100644
+index 0000000..18ba205
+--- /dev/null
++++ b/pairapp_mobile/lib/features/activities/activities_screen.dart
+@@ -0,0 +1,222 @@
++import 'package:flutter/material.dart';
++import '../../theme/app_colors.dart';
++import '../../shared/widgets/app_card.dart';
++import '../randomizer/randomizer_screen.dart';
++
++class ActivitiesScreen extends StatelessWidget {
++  const ActivitiesScreen({super.key});
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      body: Container(
++        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
++        child: SafeArea(
++          child: SingleChildScrollView(
++            padding: const EdgeInsets.symmetric(horizontal: 20),
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                const SizedBox(height: 16),
++                Text(
++                  'Активности',
++                  style: Theme.of(context).textTheme.displayMedium,
++                ),
++                const SizedBox(height: 4),
++                const Text(
++                  'Что бы вы хотели сделать вместе?',
++                  style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
++                ),
++                const SizedBox(height: 24),
++                _buildActivityCards(context),
++                const SizedBox(height: 28),
++                _buildRecentIdeas(context),
++                const SizedBox(height: 24),
++              ],
++            ),
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildActivityCards(BuildContext context) {
++    final cards = [
++      _ActivityCard(
++        icon: Icons.shuffle_rounded,
++        title: 'Рандом занятие',
++        subtitle: 'Случайная идея для вас двоих',
++        gradient: const LinearGradient(
++          colors: [Color(0xFF7C5CFC), Color(0xFF9D7FFF)],
++          begin: Alignment.topLeft,
++          end: Alignment.bottomRight,
++        ),
++        onTap: () => Navigator.push(
++          context,
++          MaterialPageRoute(builder: (_) => const RandomizerScreen()),
++        ),
++      ),
++      _ActivityCard(
++        icon: Icons.home_outlined,
++        title: 'Бытовой рандомайзер',
++        subtitle: 'Кто что делает сегодня дома',
++        gradient: const LinearGradient(
++          colors: [Color(0xFF5C6BC0), Color(0xFF7986CB)],
++          begin: Alignment.topLeft,
++          end: Alignment.bottomRight,
++        ),
++        onTap: () {},
++      ),
++      _ActivityCard(
++        icon: Icons.quiz_outlined,
++        title: 'Квизы для пары',
++        subtitle: 'Насколько вы знаете друг друга?',
++        gradient: const LinearGradient(
++          colors: [Color(0xFFD46FFF), Color(0xFFE040FB)],
++          begin: Alignment.topLeft,
++          end: Alignment.bottomRight,
++        ),
++        onTap: () {},
++      ),
++      _ActivityCard(
++        icon: Icons.favorite_border_rounded,
++        title: 'Список желаний',
++        subtitle: 'Мечты и планы на будущее',
++        gradient: const LinearGradient(
++          colors: [Color(0xFFFF6B9D), Color(0xFFFF8A65)],
++          begin: Alignment.topLeft,
++          end: Alignment.bottomRight,
++        ),
++        onTap: () {},
++      ),
++    ];
++
++    return GridView.count(
++      crossAxisCount: 2,
++      shrinkWrap: true,
++      physics: const NeverScrollableScrollPhysics(),
++      crossAxisSpacing: 12,
++      mainAxisSpacing: 12,
++      childAspectRatio: 0.9,
++      children: cards
++          .map((card) => _buildActivityCard(card))
++          .toList(),
++    );
++  }
++
++  Widget _buildActivityCard(_ActivityCard card) {
++    return GestureDetector(
++      onTap: card.onTap,
++      child: Container(
++        padding: const EdgeInsets.all(16),
++        decoration: BoxDecoration(
++          gradient: card.gradient,
++          borderRadius: BorderRadius.circular(20),
++          boxShadow: [
++            BoxShadow(
++              color: (card.gradient.colors.first).withValues(alpha: 0.3),
++              blurRadius: 16,
++              offset: const Offset(0, 4),
++            ),
++          ],
++        ),
++        child: Column(
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            Container(
++              padding: const EdgeInsets.all(10),
++              decoration: BoxDecoration(
++                color: Colors.white.withValues(alpha: 0.15),
++                borderRadius: BorderRadius.circular(12),
++              ),
++              child: Icon(card.icon, color: Colors.white, size: 22),
++            ),
++            const Spacer(),
++            Text(
++              card.title,
++              style: const TextStyle(
++                fontSize: 15,
++                fontWeight: FontWeight.bold,
++                color: Colors.white,
++              ),
++            ),
++            const SizedBox(height: 4),
++            Text(
++              card.subtitle,
++              style: TextStyle(
++                fontSize: 11,
++                color: Colors.white.withValues(alpha: 0.75),
++              ),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++
++  Widget _buildRecentIdeas(BuildContext context) {
++    final recentIdeas = [
++      'Приготовить пиццу с нуля 🍕',
++      'Посмотреть закат с горы 🌄',
++      'Сыграть в монополию 🎲',
++    ];
++
++    return Column(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        Text(
++          'Недавние идеи',
++          style: Theme.of(context).textTheme.titleLarge,
++        ),
++        const SizedBox(height: 12),
++        ...recentIdeas.map((idea) => Padding(
++              padding: const EdgeInsets.only(bottom: 10),
++              child: AppCard(
++                child: Row(
++                  children: [
++                    Container(
++                      width: 36,
++                      height: 36,
++                      decoration: BoxDecoration(
++                        color: AppColors.purple.withValues(alpha: 0.1),
++                        borderRadius: BorderRadius.circular(10),
++                      ),
++                      child: const Icon(Icons.lightbulb_outline,
++                          color: AppColors.lavender, size: 18),
++                    ),
++                    const SizedBox(width: 12),
++                    Expanded(
++                      child: Text(
++                        idea,
++                        style: const TextStyle(
++                          fontSize: 14,
++                          color: AppColors.textPrimary,
++                        ),
++                      ),
++                    ),
++                    const Icon(Icons.arrow_forward_ios,
++                        size: 14, color: AppColors.textMuted),
++                  ],
++                ),
++              ),
++            )),
++      ],
++    );
++  }
++}
++
++class _ActivityCard {
++  final IconData icon;
++  final String title;
++  final String subtitle;
++  final LinearGradient gradient;
++  final VoidCallback onTap;
++
++  _ActivityCard({
++    required this.icon,
++    required this.title,
++    required this.subtitle,
++    required this.gradient,
++    required this.onTap,
++  });
++}
+diff --git a/pairapp_mobile/lib/features/agreements/agreements_screen.dart b/pairapp_mobile/lib/features/agreements/agreements_screen.dart
+new file mode 100644
+index 0000000..2b1ec94
+--- /dev/null
++++ b/pairapp_mobile/lib/features/agreements/agreements_screen.dart
+@@ -0,0 +1,176 @@
++import 'package:flutter/material.dart';
++import '../../theme/app_colors.dart';
++import '../../shared/models/mock_data.dart';
++import '../../shared/widgets/app_card.dart';
++import '../../shared/widgets/status_badge.dart';
++import '../../shared/widgets/gradient_button.dart';
++
++class AgreementsScreen extends StatefulWidget {
++  const AgreementsScreen({super.key});
++
++  @override
++  State<AgreementsScreen> createState() => _AgreementsScreenState();
++}
++
++class _AgreementsScreenState extends State<AgreementsScreen> {
++  int _tabIndex = 0;
++  final List<String> _tabs = ['Все', 'Активные', 'Выполненные'];
++
++  List<MockAgreement> get _filtered {
++    return switch (_tabIndex) {
++      1 => MockData.agreements.where((a) => a.status == 'active').toList(),
++      2 => MockData.agreements.where((a) => a.status == 'done').toList(),
++      _ => MockData.agreements,
++    };
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      body: Container(
++        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
++        child: SafeArea(
++          child: Column(
++            children: [
++              _buildAppBar(context),
++              _buildTabs(),
++              Expanded(
++                child: ListView.separated(
++                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
++                  itemCount: _filtered.length,
++                  separatorBuilder: (_, __) => const SizedBox(height: 12),
++                  itemBuilder: (context, i) =>
++                      _buildAgreementCard(_filtered[i]),
++                ),
++              ),
++              Padding(
++                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
++                child: GradientButton(
++                  label: 'Добавить договорённость',
++                  icon: Icons.add,
++                  width: double.infinity,
++                  onTap: () {},
++                ),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildAppBar(BuildContext context) {
++    return Padding(
++      padding: const EdgeInsets.fromLTRB(8, 8, 16, 8),
++      child: Row(
++        children: [
++          IconButton(
++            onPressed: () => Navigator.pop(context),
++            icon: const Icon(Icons.arrow_back_ios_new,
++                color: AppColors.textPrimary, size: 18),
++          ),
++          Expanded(
++            child: Text(
++              'Договорённости',
++              style: Theme.of(context).textTheme.titleLarge,
++              textAlign: TextAlign.center,
++            ),
++          ),
++          const SizedBox(width: 48),
++        ],
++      ),
++    );
++  }
++
++  Widget _buildTabs() {
++    return Container(
++      margin: const EdgeInsets.symmetric(horizontal: 20),
++      decoration: BoxDecoration(
++        color: AppColors.bgCard,
++        borderRadius: BorderRadius.circular(12),
++      ),
++      child: Row(
++        children: _tabs.asMap().entries.map((entry) {
++          final i = entry.key;
++          final tab = entry.value;
++          final selected = i == _tabIndex;
++          return Expanded(
++            child: GestureDetector(
++              onTap: () => setState(() => _tabIndex = i),
++              child: AnimatedContainer(
++                duration: const Duration(milliseconds: 200),
++                margin: const EdgeInsets.all(4),
++                padding: const EdgeInsets.symmetric(vertical: 10),
++                decoration: BoxDecoration(
++                  gradient: selected ? AppColors.purpleGradient : null,
++                  borderRadius: BorderRadius.circular(10),
++                ),
++                child: Text(
++                  tab,
++                  textAlign: TextAlign.center,
++                  style: TextStyle(
++                    fontSize: 13,
++                    fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
++                    color: selected ? Colors.white : AppColors.textMuted,
++                  ),
++                ),
++              ),
++            ),
++          );
++        }).toList(),
++      ),
++    );
++  }
++
++  Widget _buildAgreementCard(MockAgreement agreement) {
++    return AppCard(
++      child: Row(
++        children: [
++          Container(
++            width: 40,
++            height: 40,
++            decoration: BoxDecoration(
++              color: (agreement.status == 'active'
++                      ? AppColors.purple
++                      : AppColors.statusResolved)
++                  .withValues(alpha: 0.12),
++              borderRadius: BorderRadius.circular(12),
++            ),
++            child: Icon(
++              agreement.status == 'active'
++                  ? Icons.handshake_outlined
++                  : Icons.check_circle_outline,
++              color: agreement.status == 'active'
++                  ? AppColors.purple
++                  : AppColors.statusResolved,
++              size: 20,
++            ),
++          ),
++          const SizedBox(width: 14),
++          Expanded(
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Text(
++                  agreement.title,
++                  style: const TextStyle(
++                    fontSize: 14,
++                    fontWeight: FontWeight.w500,
++                    color: AppColors.textPrimary,
++                  ),
++                ),
++                const SizedBox(height: 4),
++                Text(
++                  'Создал: ${agreement.createdBy}',
++                  style: const TextStyle(
++                      fontSize: 12, color: AppColors.textMuted),
++                ),
++              ],
++            ),
++          ),
++          StatusBadge(status: agreement.status),
++        ],
++      ),
++    );
++  }
++}
+diff --git a/pairapp_mobile/lib/features/create_issue/create_issue_screen.dart b/pairapp_mobile/lib/features/create_issue/create_issue_screen.dart
+new file mode 100644
+index 0000000..5e5a28e
+--- /dev/null
++++ b/pairapp_mobile/lib/features/create_issue/create_issue_screen.dart
+@@ -0,0 +1,239 @@
++import 'package:flutter/material.dart';
++import '../../theme/app_colors.dart';
++import '../../shared/widgets/gradient_button.dart';
++
++class CreateIssueScreen extends StatefulWidget {
++  const CreateIssueScreen({super.key});
++
++  @override
++  State<CreateIssueScreen> createState() => _CreateIssueScreenState();
++}
++
++class _CreateIssueScreenState extends State<CreateIssueScreen> {
++  int _importance = 3;
++  String? _selectedCategory;
++  String? _selectedFeeling;
++
++  final _categories = ['Время', 'Финансы', 'Быт', 'Общение', 'Интимность', 'Семья'];
++  final _feelings = ['Грустно 😢', 'Тревожно 😰', 'Обидно 😔', 'Злюсь 😤', 'Растерян 😕'];
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      body: Container(
++        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
++        child: SafeArea(
++          child: Column(
++            children: [
++              _buildAppBar(context),
++              Expanded(
++                child: SingleChildScrollView(
++                  padding: const EdgeInsets.symmetric(horizontal: 20),
++                  child: Column(
++                    crossAxisAlignment: CrossAxisAlignment.start,
++                    children: [
++                      const SizedBox(height: 8),
++                      _buildField(
++                        label: 'Что вас беспокоит?',
++                        hint: 'Опишите проблему кратко...',
++                        maxLines: 1,
++                      ),
++                      const SizedBox(height: 20),
++                      _buildField(
++                        label: 'Описание',
++                        hint: 'Расскажите подробнее — что происходит, когда это началось...',
++                        maxLines: 4,
++                      ),
++                      const SizedBox(height: 20),
++                      _buildLabel('Категория'),
++                      const SizedBox(height: 10),
++                      _buildChips(_categories, _selectedCategory,
++                          (v) => setState(() => _selectedCategory = v)),
++                      const SizedBox(height: 20),
++                      _buildLabel('Как вы себя чувствуете?'),
++                      const SizedBox(height: 10),
++                      _buildChips(_feelings, _selectedFeeling,
++                          (v) => setState(() => _selectedFeeling = v)),
++                      const SizedBox(height: 20),
++                      _buildLabel('Важность'),
++                      const SizedBox(height: 12),
++                      _buildImportanceSlider(),
++                      const SizedBox(height: 32),
++                      GradientButton(
++                        label: 'Создать проблему',
++                        icon: Icons.add_circle_outline,
++                        width: double.infinity,
++                        onTap: () => Navigator.pop(context),
++                      ),
++                      const SizedBox(height: 24),
++                    ],
++                  ),
++                ),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildAppBar(BuildContext context) {
++    return Padding(
++      padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
++      child: Row(
++        children: [
++          IconButton(
++            onPressed: () => Navigator.pop(context),
++            icon: const Icon(Icons.close,
++                color: AppColors.textPrimary),
++          ),
++          Expanded(
++            child: Text(
++              'Новая проблема',
++              style: Theme.of(context).textTheme.titleLarge,
++              textAlign: TextAlign.center,
++            ),
++          ),
++          const SizedBox(width: 48),
++        ],
++      ),
++    );
++  }
++
++  Widget _buildLabel(String text) {
++    return Text(
++      text,
++      style: const TextStyle(
++        fontSize: 14,
++        fontWeight: FontWeight.w600,
++        color: AppColors.textPrimary,
++      ),
++    );
++  }
++
++  Widget _buildField({
++    required String label,
++    required String hint,
++    int maxLines = 1,
++  }) {
++    return Column(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        _buildLabel(label),
++        const SizedBox(height: 8),
++        TextField(
++          maxLines: maxLines,
++          style: const TextStyle(color: AppColors.textPrimary),
++          decoration: InputDecoration(hintText: hint),
++        ),
++      ],
++    );
++  }
++
++  Widget _buildChips(
++    List<String> items,
++    String? selected,
++    ValueChanged<String> onSelect,
++  ) {
++    return Wrap(
++      spacing: 8,
++      runSpacing: 8,
++      children: items.map((item) {
++        final isSelected = item == selected;
++        return GestureDetector(
++          onTap: () => onSelect(item),
++          child: AnimatedContainer(
++            duration: const Duration(milliseconds: 200),
++            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
++            decoration: BoxDecoration(
++              gradient: isSelected ? AppColors.purpleGradient : null,
++              color: isSelected ? null : AppColors.bgCard,
++              borderRadius: BorderRadius.circular(20),
++              border: isSelected
++                  ? null
++                  : Border.all(color: AppColors.bgCardLight),
++              boxShadow: isSelected
++                  ? [
++                      BoxShadow(
++                        color: AppColors.purple.withValues(alpha: 0.3),
++                        blurRadius: 8,
++                        offset: const Offset(0, 2),
++                      ),
++                    ]
++                  : null,
++            ),
++            child: Text(
++              item,
++              style: TextStyle(
++                fontSize: 13,
++                color: isSelected ? Colors.white : AppColors.textSecondary,
++                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
++              ),
++            ),
++          ),
++        );
++      }).toList(),
++    );
++  }
++
++  Widget _buildImportanceSlider() {
++    return Column(
++      children: [
++        Row(
++          mainAxisAlignment: MainAxisAlignment.spaceBetween,
++          children: List.generate(5, (i) {
++            final val = i + 1;
++            final selected = val <= _importance;
++            return GestureDetector(
++              onTap: () => setState(() => _importance = val),
++              child: AnimatedContainer(
++                duration: const Duration(milliseconds: 150),
++                width: 52,
++                height: 52,
++                decoration: BoxDecoration(
++                  gradient: selected ? AppColors.purpleGradient : null,
++                  color: selected ? null : AppColors.bgCard,
++                  borderRadius: BorderRadius.circular(14),
++                  border: Border.all(
++                    color: selected
++                        ? Colors.transparent
++                        : AppColors.bgCardLight,
++                  ),
++                  boxShadow: selected
++                      ? [
++                          BoxShadow(
++                            color: AppColors.purple.withValues(alpha: 0.4),
++                            blurRadius: 10,
++                            offset: const Offset(0, 2),
++                          ),
++                        ]
++                      : null,
++                ),
++                child: Center(
++                  child: Text(
++                    '$val',
++                    style: TextStyle(
++                      fontSize: 18,
++                      fontWeight: FontWeight.bold,
++                      color: selected ? Colors.white : AppColors.textMuted,
++                    ),
++                  ),
++                ),
++              ),
++            );
++          }),
++        ),
++        const SizedBox(height: 8),
++        const Row(
++          mainAxisAlignment: MainAxisAlignment.spaceBetween,
++          children: [
++            Text('Маловажно',
++                style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
++            Text('Очень важно',
++                style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
++          ],
++        ),
++      ],
++    );
++  }
++}
+diff --git a/pairapp_mobile/lib/features/home/home_screen.dart b/pairapp_mobile/lib/features/home/home_screen.dart
+new file mode 100644
+index 0000000..a8b6a83
+--- /dev/null
++++ b/pairapp_mobile/lib/features/home/home_screen.dart
+@@ -0,0 +1,225 @@
++import 'package:flutter/material.dart';
++import '../../theme/app_colors.dart';
++import '../../shared/widgets/app_card.dart';
++
++class HomeScreen extends StatelessWidget {
++  const HomeScreen({super.key});
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      body: Container(
++        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
++        child: SafeArea(
++          child: SingleChildScrollView(
++            padding: const EdgeInsets.symmetric(horizontal: 20),
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.center,
++              children: [
++                const SizedBox(height: 16),
++                _buildHeader(context),
++                const SizedBox(height: 32),
++                _buildHeartSection(),
++                const SizedBox(height: 28),
++                _buildStatsGrid(context),
++                const SizedBox(height: 24),
++              ],
++            ),
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildHeader(BuildContext context) {
++    return Row(
++      mainAxisAlignment: MainAxisAlignment.spaceBetween,
++      children: [
++        Column(
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            Text(
++              'Добрый вечер 🌙',
++              style: Theme.of(context).textTheme.bodyMedium,
++            ),
++            const SizedBox(height: 4),
++            Text(
++              'Анна & Павел',
++              style: Theme.of(context).textTheme.displayMedium,
++            ),
++          ],
++        ),
++        Stack(
++          children: [
++            Container(
++              width: 44,
++              height: 44,
++              decoration: BoxDecoration(
++                gradient: AppColors.purpleGradient,
++                shape: BoxShape.circle,
++              ),
++              child: const Icon(Icons.notifications_outlined,
++                  color: Colors.white, size: 20),
++            ),
++            Positioned(
++              right: 0,
++              top: 0,
++              child: Container(
++                width: 12,
++                height: 12,
++                decoration: BoxDecoration(
++                  color: AppColors.roseAccent,
++                  shape: BoxShape.circle,
++                  border: Border.all(color: AppColors.bgDeep, width: 2),
++                ),
++              ),
++            ),
++          ],
++        ),
++      ],
++    );
++  }
++
++  Widget _buildHeartSection() {
++    return Column(
++      children: [
++        Stack(
++          alignment: Alignment.center,
++          children: [
++            // Glow background
++            Container(
++              width: 180,
++              height: 180,
++              decoration: const BoxDecoration(
++                shape: BoxShape.circle,
++                gradient: AppColors.heartGlow,
++              ),
++            ),
++            // Heart icon
++            ShaderMask(
++              shaderCallback: (bounds) =>
++                  AppColors.purpleGradient.createShader(bounds),
++              child: const Icon(
++                Icons.favorite,
++                size: 96,
++                color: Colors.white,
++              ),
++            ),
++          ],
++        ),
++        const SizedBox(height: 16),
++        const Text(
++          'Мы вместе',
++          style: TextStyle(
++            fontSize: 20,
++            fontWeight: FontWeight.bold,
++            color: AppColors.textPrimary,
++          ),
++        ),
++        const SizedBox(height: 6),
++        const Text(
++          '2 года, 3 месяца и 14 дней ✨',
++          style: TextStyle(
++            fontSize: 14,
++            color: AppColors.textSecondary,
++          ),
++        ),
++      ],
++    );
++  }
++
++  Widget _buildStatsGrid(BuildContext context) {
++    final stats = [
++      _StatItem(
++        icon: Icons.warning_amber_rounded,
++        iconColor: AppColors.statusOpen,
++        label: 'Открытые\nпроблемы',
++        value: '2',
++      ),
++      _StatItem(
++        icon: Icons.handshake_outlined,
++        iconColor: AppColors.lavender,
++        label: 'Договорён-\nности',
++        value: '4',
++      ),
++      _StatItem(
++        icon: Icons.local_activity_outlined,
++        iconColor: AppColors.pinkPurple,
++        label: 'Активные\nактивности',
++        value: '3',
++      ),
++      _StatItem(
++        icon: Icons.chat_bubble_outline,
++        iconColor: AppColors.roseAccent,
++        label: 'Непрочитан-\nных',
++        value: '5',
++      ),
++    ];
++
++    return GridView.count(
++      crossAxisCount: 2,
++      shrinkWrap: true,
++      physics: const NeverScrollableScrollPhysics(),
++      crossAxisSpacing: 12,
++      mainAxisSpacing: 12,
++      childAspectRatio: 1.4,
++      children: stats.map((s) => _buildStatCard(context, s)).toList(),
++    );
++  }
++
++  Widget _buildStatCard(BuildContext context, _StatItem item) {
++    return AppCard(
++      padding: const EdgeInsets.all(16),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        mainAxisAlignment: MainAxisAlignment.spaceBetween,
++        children: [
++          Container(
++            width: 36,
++            height: 36,
++            decoration: BoxDecoration(
++              color: item.iconColor.withValues(alpha: 0.12),
++              borderRadius: BorderRadius.circular(10),
++            ),
++            child: Icon(item.icon, color: item.iconColor, size: 18),
++          ),
++          Column(
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              Text(
++                item.value,
++                style: const TextStyle(
++                  fontSize: 24,
++                  fontWeight: FontWeight.bold,
++                  color: AppColors.textPrimary,
++                ),
++              ),
++              Text(
++                item.label,
++                style: const TextStyle(
++                  fontSize: 11,
++                  color: AppColors.textSecondary,
++                  height: 1.3,
++                ),
++              ),
++            ],
++          ),
++        ],
++      ),
++    );
++  }
++}
++
++class _StatItem {
++  final IconData icon;
++  final Color iconColor;
++  final String label;
++  final String value;
++
++  _StatItem({
++    required this.icon,
++    required this.iconColor,
++    required this.label,
++    required this.value,
++  });
++}
+diff --git a/pairapp_mobile/lib/features/issues/issues_screen.dart b/pairapp_mobile/lib/features/issues/issues_screen.dart
+new file mode 100644
+index 0000000..c776d5b
+--- /dev/null
++++ b/pairapp_mobile/lib/features/issues/issues_screen.dart
+@@ -0,0 +1,227 @@
++import 'package:flutter/material.dart';
++import '../../theme/app_colors.dart';
++import '../../shared/models/mock_data.dart';
++import '../../shared/widgets/app_card.dart';
++import '../../shared/widgets/status_badge.dart';
++import 'screens/issue_chat_screen.dart';
++
++class IssuesScreen extends StatefulWidget {
++  const IssuesScreen({super.key});
++
++  @override
++  State<IssuesScreen> createState() => _IssuesScreenState();
++}
++
++class _IssuesScreenState extends State<IssuesScreen> {
++  int _filterIndex = 0;
++  final List<String> _filters = ['Все', 'Мои', 'Партнёра', 'Открытые'];
++
++  List<MockIssue> get _filteredIssues {
++    return switch (_filterIndex) {
++      1 => MockData.issues.where((i) => i.author == 'Павел').toList(),
++      2 => MockData.issues.where((i) => i.author == 'Анна').toList(),
++      3 => MockData.issues.where((i) => i.status == 'open').toList(),
++      _ => MockData.issues,
++    };
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      body: Container(
++        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
++        child: SafeArea(
++          child: Column(
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              _buildAppBar(context),
++              _buildFilters(),
++              Expanded(
++                child: _filteredIssues.isEmpty
++                    ? const Center(
++                        child: Text(
++                          'Нет проблем в этой категории',
++                          style: TextStyle(color: AppColors.textMuted),
++                        ),
++                      )
++                    : ListView.separated(
++                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
++                        itemCount: _filteredIssues.length,
++                        separatorBuilder: (_, __) => const SizedBox(height: 12),
++                        itemBuilder: (context, i) =>
++                            _buildIssueCard(context, _filteredIssues[i]),
++                      ),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildAppBar(BuildContext context) {
++    return Padding(
++      padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
++      child: Row(
++        mainAxisAlignment: MainAxisAlignment.spaceBetween,
++        children: [
++          Text(
++            'Проблемы',
++            style: Theme.of(context).textTheme.displayMedium,
++          ),
++          Container(
++            padding: const EdgeInsets.all(10),
++            decoration: BoxDecoration(
++              color: AppColors.bgCard,
++              borderRadius: BorderRadius.circular(12),
++              border: Border.all(color: AppColors.bgCardLight),
++            ),
++            child: const Icon(Icons.tune, color: AppColors.textSecondary, size: 18),
++          ),
++        ],
++      ),
++    );
++  }
++
++  Widget _buildFilters() {
++    return SizedBox(
++      height: 40,
++      child: ListView.separated(
++        scrollDirection: Axis.horizontal,
++        padding: const EdgeInsets.symmetric(horizontal: 20),
++        itemCount: _filters.length,
++        separatorBuilder: (_, __) => const SizedBox(width: 8),
++        itemBuilder: (context, i) {
++          final selected = i == _filterIndex;
++          return GestureDetector(
++            onTap: () => setState(() => _filterIndex = i),
++            child: AnimatedContainer(
++              duration: const Duration(milliseconds: 200),
++              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
++              decoration: BoxDecoration(
++                gradient: selected ? AppColors.purpleGradient : null,
++                color: selected ? null : AppColors.bgCard,
++                borderRadius: BorderRadius.circular(20),
++                border: selected
++                    ? null
++                    : Border.all(color: AppColors.bgCardLight),
++                boxShadow: selected
++                    ? [
++                        BoxShadow(
++                          color: AppColors.purple.withValues(alpha: 0.3),
++                          blurRadius: 8,
++                          offset: const Offset(0, 2),
++                        ),
++                      ]
++                    : null,
++              ),
++              child: Text(
++                _filters[i],
++                style: TextStyle(
++                  color: selected ? Colors.white : AppColors.textSecondary,
++                  fontSize: 13,
++                  fontWeight:
++                      selected ? FontWeight.w600 : FontWeight.normal,
++                ),
++              ),
++            ),
++          );
++        },
++      ),
++    );
++  }
++
++  Widget _buildIssueCard(BuildContext context, MockIssue issue) {
++    return AppCard(
++      onTap: () => Navigator.push(
++        context,
++        MaterialPageRoute(
++          builder: (_) => IssueChatScreen(issue: issue),
++        ),
++      ),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Row(
++            children: [
++              Expanded(
++                child: Text(
++                  issue.title,
++                  style: const TextStyle(
++                    fontSize: 15,
++                    fontWeight: FontWeight.w600,
++                    color: AppColors.textPrimary,
++                  ),
++                ),
++              ),
++              StatusBadge(status: issue.status),
++            ],
++          ),
++          const SizedBox(height: 8),
++          Text(
++            issue.description,
++            style: const TextStyle(
++              fontSize: 13,
++              color: AppColors.textSecondary,
++            ),
++            maxLines: 2,
++            overflow: TextOverflow.ellipsis,
++          ),
++          const SizedBox(height: 12),
++          Row(
++            children: [
++              CircleAvatar(
++                radius: 12,
++                backgroundColor: AppColors.purple.withValues(alpha: 0.2),
++                child: Text(
++                  issue.author[0],
++                  style: const TextStyle(
++                    fontSize: 11,
++                    color: AppColors.purple,
++                    fontWeight: FontWeight.bold,
++                  ),
++                ),
++              ),
++              const SizedBox(width: 8),
++              Text(
++                issue.author,
++                style: const TextStyle(
++                  fontSize: 12,
++                  color: AppColors.textSecondary,
++                ),
++              ),
++              const Spacer(),
++              Container(
++                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
++                decoration: BoxDecoration(
++                  color: AppColors.bgCardLight,
++                  borderRadius: BorderRadius.circular(8),
++                ),
++                child: Text(
++                  issue.category,
++                  style: const TextStyle(
++                    fontSize: 11,
++                    color: AppColors.textMuted,
++                  ),
++                ),
++              ),
++              const SizedBox(width: 8),
++              Row(
++                children: List.generate(
++                  5,
++                  (i) => Icon(
++                    Icons.circle,
++                    size: 6,
++                    color: i < issue.importance
++                        ? AppColors.purple
++                        : AppColors.bgCardLight,
++                  ),
++                ),
++              ),
++            ],
++          ),
++        ],
++      ),
++    );
++  }
++}
+diff --git a/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart b/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart
+new file mode 100644
+index 0000000..9048620
+--- /dev/null
++++ b/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart
+@@ -0,0 +1,292 @@
++import 'package:flutter/material.dart';
++import '../../../theme/app_colors.dart';
++import '../../../shared/models/mock_data.dart';
++import '../../../shared/widgets/app_card.dart';
++import '../../../shared/widgets/status_badge.dart';
++
++class IssueChatScreen extends StatefulWidget {
++  final MockIssue issue;
++
++  const IssueChatScreen({super.key, required this.issue});
++
++  @override
++  State<IssueChatScreen> createState() => _IssueChatScreenState();
++}
++
++class _IssueChatScreenState extends State<IssueChatScreen>
++    with SingleTickerProviderStateMixin {
++  late TabController _tabController;
++  final TextEditingController _msgController = TextEditingController();
++  final List<MockMessage> _messages = List.from(MockData.messages);
++
++  @override
++  void initState() {
++    super.initState();
++    _tabController = TabController(length: 2, vsync: this);
++  }
++
++  @override
++  void dispose() {
++    _tabController.dispose();
++    _msgController.dispose();
++    super.dispose();
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      body: Container(
++        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
++        child: SafeArea(
++          child: Column(
++            children: [
++              _buildAppBar(context),
++              _buildTabBar(),
++              Expanded(
++                child: TabBarView(
++                  controller: _tabController,
++                  children: [
++                    _buildChatTab(),
++                    _buildAgreementsTab(),
++                  ],
++                ),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildAppBar(BuildContext context) {
++    return Padding(
++      padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
++      child: Row(
++        children: [
++          IconButton(
++            onPressed: () => Navigator.pop(context),
++            icon: const Icon(Icons.arrow_back_ios_new,
++                color: AppColors.textPrimary, size: 18),
++          ),
++          Expanded(
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Text(
++                  widget.issue.title,
++                  style: const TextStyle(
++                    fontSize: 15,
++                    fontWeight: FontWeight.w600,
++                    color: AppColors.textPrimary,
++                  ),
++                  overflow: TextOverflow.ellipsis,
++                ),
++                const SizedBox(height: 2),
++                StatusBadge(status: widget.issue.status),
++              ],
++            ),
++          ),
++          const Icon(Icons.more_vert, color: AppColors.textSecondary),
++        ],
++      ),
++    );
++  }
++
++  Widget _buildTabBar() {
++    return Container(
++      margin: const EdgeInsets.fromLTRB(20, 12, 20, 0),
++      decoration: BoxDecoration(
++        color: AppColors.bgCard,
++        borderRadius: BorderRadius.circular(12),
++      ),
++      child: TabBar(
++        controller: _tabController,
++        indicator: BoxDecoration(
++          gradient: AppColors.purpleGradient,
++          borderRadius: BorderRadius.circular(10),
++        ),
++        indicatorSize: TabBarIndicatorSize.tab,
++        dividerColor: Colors.transparent,
++        labelColor: Colors.white,
++        unselectedLabelColor: AppColors.textMuted,
++        labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
++        tabs: const [
++          Tab(text: 'Чат'),
++          Tab(text: 'Договорённости'),
++        ],
++      ),
++    );
++  }
++
++  Widget _buildChatTab() {
++    return Column(
++      children: [
++        Expanded(
++          child: ListView.separated(
++            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
++            itemCount: _messages.length,
++            separatorBuilder: (_, __) => const SizedBox(height: 8),
++            itemBuilder: (context, i) => _buildBubble(_messages[i]),
++          ),
++        ),
++        _buildInputBar(),
++      ],
++    );
++  }
++
++  Widget _buildBubble(MockMessage msg) {
++    return Align(
++      alignment: msg.isMe ? Alignment.centerRight : Alignment.centerLeft,
++      child: Container(
++        constraints: const BoxConstraints(maxWidth: 260),
++        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
++        decoration: BoxDecoration(
++          gradient: msg.isMe ? AppColors.purpleGradient : null,
++          color: msg.isMe ? null : AppColors.bgCard,
++          borderRadius: BorderRadius.only(
++            topLeft: const Radius.circular(16),
++            topRight: const Radius.circular(16),
++            bottomLeft: Radius.circular(msg.isMe ? 16 : 4),
++            bottomRight: Radius.circular(msg.isMe ? 4 : 16),
++          ),
++          border: msg.isMe
++              ? null
++              : Border.all(color: AppColors.bgCardLight),
++          boxShadow: msg.isMe
++              ? [
++                  BoxShadow(
++                    color: AppColors.purple.withValues(alpha: 0.25),
++                    blurRadius: 8,
++                    offset: const Offset(0, 2),
++                  ),
++                ]
++              : null,
++        ),
++        child: Text(
++          msg.text,
++          style: TextStyle(
++            fontSize: 14,
++            color: msg.isMe ? Colors.white : AppColors.textPrimary,
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildInputBar() {
++    return Container(
++      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
++      decoration: const BoxDecoration(
++        color: AppColors.bgSurface,
++        border: Border(top: BorderSide(color: AppColors.bgCardLight)),
++      ),
++      child: Row(
++        children: [
++          Expanded(
++            child: TextField(
++              controller: _msgController,
++              style: const TextStyle(color: AppColors.textPrimary),
++              decoration: const InputDecoration(
++                hintText: 'Напишите сообщение...',
++                contentPadding:
++                    EdgeInsets.symmetric(horizontal: 16, vertical: 12),
++              ),
++            ),
++          ),
++          const SizedBox(width: 10),
++          GestureDetector(
++            onTap: () {
++              if (_msgController.text.isNotEmpty) {
++                setState(() {
++                  _messages.add(MockMessage(
++                    text: _msgController.text,
++                    isMe: true,
++                    time: DateTime.now(),
++                  ));
++                  _msgController.clear();
++                });
++              }
++            },
++            child: Container(
++              width: 44,
++              height: 44,
++              decoration: BoxDecoration(
++                gradient: AppColors.purpleGradient,
++                borderRadius: BorderRadius.circular(12),
++                boxShadow: [
++                  BoxShadow(
++                    color: AppColors.purple.withValues(alpha: 0.4),
++                    blurRadius: 10,
++                    offset: const Offset(0, 2),
++                  ),
++                ],
++              ),
++              child: const Icon(Icons.send_rounded,
++                  color: Colors.white, size: 18),
++            ),
++          ),
++        ],
++      ),
++    );
++  }
++
++  Widget _buildAgreementsTab() {
++    return ListView.separated(
++      padding: const EdgeInsets.all(20),
++      itemCount: MockData.agreements.length,
++      separatorBuilder: (_, __) => const SizedBox(height: 12),
++      itemBuilder: (context, i) {
++        final a = MockData.agreements[i];
++        return AppCard(
++          child: Row(
++            children: [
++              Container(
++                width: 36,
++                height: 36,
++                decoration: BoxDecoration(
++                  color: (a.status == 'active'
++                          ? AppColors.purple
++                          : AppColors.statusResolved)
++                      .withValues(alpha: 0.15),
++                  borderRadius: BorderRadius.circular(10),
++                ),
++                child: Icon(
++                  a.status == 'active'
++                      ? Icons.handshake_outlined
++                      : Icons.check_circle_outline,
++                  color: a.status == 'active'
++                      ? AppColors.purple
++                      : AppColors.statusResolved,
++                  size: 18,
++                ),
++              ),
++              const SizedBox(width: 12),
++              Expanded(
++                child: Column(
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                    Text(
++                      a.title,
++                      style: const TextStyle(
++                        fontSize: 14,
++                        fontWeight: FontWeight.w500,
++                        color: AppColors.textPrimary,
++                      ),
++                    ),
++                    const SizedBox(height: 2),
++                    Text(
++                      'Создал: ${a.createdBy}',
++                      style: const TextStyle(
++                          fontSize: 12, color: AppColors.textMuted),
++                    ),
++                  ],
++                ),
++              ),
++              StatusBadge(status: a.status),
++            ],
++          ),
++        );
++      },
++    );
++  }
++}
+diff --git a/pairapp_mobile/lib/features/profile/profile_screen.dart b/pairapp_mobile/lib/features/profile/profile_screen.dart
+new file mode 100644
+index 0000000..77d5311
+--- /dev/null
++++ b/pairapp_mobile/lib/features/profile/profile_screen.dart
+@@ -0,0 +1,288 @@
++import 'package:flutter/material.dart';
++import '../../theme/app_colors.dart';
++import '../../shared/widgets/app_card.dart';
++
++class ProfileScreen extends StatelessWidget {
++  const ProfileScreen({super.key});
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      body: Container(
++        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
++        child: SafeArea(
++          child: SingleChildScrollView(
++            padding: const EdgeInsets.symmetric(horizontal: 20),
++            child: Column(
++              children: [
++                const SizedBox(height: 16),
++                _buildHeader(context),
++                const SizedBox(height: 28),
++                _buildAvatar(context),
++                const SizedBox(height: 24),
++                _buildMenuItems(context),
++                const SizedBox(height: 20),
++                _buildLogoutButton(context),
++                const SizedBox(height: 24),
++              ],
++            ),
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildHeader(BuildContext context) {
++    return Row(
++      mainAxisAlignment: MainAxisAlignment.spaceBetween,
++      children: [
++        Text('Профиль', style: Theme.of(context).textTheme.displayMedium),
++        GestureDetector(
++          onTap: () {},
++          child: Container(
++            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
++            decoration: BoxDecoration(
++              color: AppColors.bgCard,
++              borderRadius: BorderRadius.circular(10),
++              border: Border.all(color: AppColors.bgCardLight),
++            ),
++            child: const Row(
++              children: [
++                Icon(Icons.edit_outlined,
++                    size: 14, color: AppColors.textSecondary),
++                SizedBox(width: 6),
++                Text(
++                  'Изменить',
++                  style:
++                      TextStyle(fontSize: 13, color: AppColors.textSecondary),
++                ),
++              ],
++            ),
++          ),
++        ),
++      ],
++    );
++  }
++
++  Widget _buildAvatar(BuildContext context) {
++    return Column(
++      children: [
++        Stack(
++          alignment: Alignment.bottomRight,
++          children: [
++            Container(
++              width: 88,
++              height: 88,
++              decoration: BoxDecoration(
++                gradient: AppColors.purpleGradient,
++                shape: BoxShape.circle,
++                boxShadow: [
++                  BoxShadow(
++                    color: AppColors.purple.withValues(alpha: 0.4),
++                    blurRadius: 20,
++                    offset: const Offset(0, 4),
++                  ),
++                ],
++              ),
++              child: const Center(
++                child: Text(
++                  'П',
++                  style: TextStyle(
++                    fontSize: 34,
++                    fontWeight: FontWeight.bold,
++                    color: Colors.white,
++                  ),
++                ),
++              ),
++            ),
++            Container(
++              width: 26,
++              height: 26,
++              decoration: BoxDecoration(
++                color: AppColors.bgSurface,
++                shape: BoxShape.circle,
++                border: Border.all(color: AppColors.bgCard, width: 2),
++              ),
++              child: const Icon(Icons.camera_alt_outlined,
++                  size: 13, color: AppColors.textSecondary),
++            ),
++          ],
++        ),
++        const SizedBox(height: 12),
++        Text(
++          'Павел',
++          style: Theme.of(context).textTheme.displayMedium,
++        ),
++        const SizedBox(height: 4),
++        const Text(
++          'pavel@example.com',
++          style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
++        ),
++        const SizedBox(height: 8),
++        Container(
++          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
++          decoration: BoxDecoration(
++            color: AppColors.purple.withValues(alpha: 0.15),
++            borderRadius: BorderRadius.circular(20),
++            border: Border.all(
++                color: AppColors.purple.withValues(alpha: 0.3)),
++          ),
++          child: const Row(
++            mainAxisSize: MainAxisSize.min,
++            children: [
++              Icon(Icons.favorite, size: 12, color: AppColors.purple),
++              SizedBox(width: 6),
++              Text(
++                'Пара с Анной',
++                style: TextStyle(
++                    fontSize: 12,
++                    color: AppColors.purple,
++                    fontWeight: FontWeight.w500),
++              ),
++            ],
++          ),
++        ),
++      ],
++    );
++  }
++
++  Widget _buildMenuItems(BuildContext context) {
++    final items = [
++      _MenuItem(
++          icon: Icons.people_outline, label: 'Настройки пары', hasArrow: true),
++      _MenuItem(
++          icon: Icons.notifications_outlined,
++          label: 'Уведомления',
++          hasArrow: true),
++      _MenuItem(
++          icon: Icons.language_outlined, label: 'Язык', value: 'Русский'),
++      _MenuItem(
++          icon: Icons.help_outline, label: 'Поддержка', hasArrow: true),
++      _MenuItem(
++          icon: Icons.info_outline, label: 'О приложении', value: 'v1.0.0'),
++    ];
++
++    return AppCard(
++      padding: EdgeInsets.zero,
++      child: Column(
++        children: items.asMap().entries.map((entry) {
++          final i = entry.key;
++          final item = entry.value;
++          return Column(
++            children: [
++              ListTile(
++                contentPadding:
++                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
++                leading: Container(
++                  width: 36,
++                  height: 36,
++                  decoration: BoxDecoration(
++                    color: AppColors.purple.withValues(alpha: 0.1),
++                    borderRadius: BorderRadius.circular(10),
++                  ),
++                  child: Icon(item.icon,
++                      color: AppColors.lavender, size: 18),
++                ),
++                title: Text(
++                  item.label,
++                  style: const TextStyle(
++                    fontSize: 14,
++                    fontWeight: FontWeight.w500,
++                    color: AppColors.textPrimary,
++                  ),
++                ),
++                trailing: item.hasArrow
++                    ? const Icon(Icons.arrow_forward_ios,
++                        size: 14, color: AppColors.textMuted)
++                    : item.value != null
++                        ? Text(
++                            item.value!,
++                            style: const TextStyle(
++                                fontSize: 13,
++                                color: AppColors.textMuted),
++                          )
++                        : null,
++                onTap: () {},
++              ),
++              if (i < items.length - 1)
++                const Divider(
++                    height: 1, indent: 68, endIndent: 16),
++            ],
++          );
++        }).toList(),
++      ),
++    );
++  }
++
++  Widget _buildLogoutButton(BuildContext context) {
++    return GestureDetector(
++      onTap: () {
++        showDialog(
++          context: context,
++          builder: (_) => AlertDialog(
++            backgroundColor: AppColors.bgCard,
++            shape:
++                RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
++            title: const Text('Выйти из пары?',
++                style: TextStyle(color: AppColors.textPrimary)),
++            content: const Text(
++              'Вы уверены? Это действие нельзя отменить.',
++              style: TextStyle(color: AppColors.textSecondary),
++            ),
++            actions: [
++              TextButton(
++                onPressed: () => Navigator.pop(context),
++                child: const Text('Отмена',
++                    style: TextStyle(color: AppColors.textMuted)),
++              ),
++              TextButton(
++                onPressed: () => Navigator.pop(context),
++                child: const Text('Выйти',
++                    style: TextStyle(color: AppColors.roseAccent)),
++              ),
++            ],
++          ),
++        );
++      },
++      child: Container(
++        width: double.infinity,
++        padding: const EdgeInsets.symmetric(vertical: 14),
++        decoration: BoxDecoration(
++          color: AppColors.roseAccent.withValues(alpha: 0.1),
++          borderRadius: BorderRadius.circular(14),
++          border: Border.all(
++              color: AppColors.roseAccent.withValues(alpha: 0.3)),
++        ),
++        child: const Row(
++          mainAxisAlignment: MainAxisAlignment.center,
++          children: [
++            Icon(Icons.logout, color: AppColors.roseAccent, size: 18),
++            SizedBox(width: 8),
++            Text(
++              'Выйти из пары',
++              style: TextStyle(
++                color: AppColors.roseAccent,
++                fontSize: 15,
++                fontWeight: FontWeight.w600,
++              ),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++}
++
++class _MenuItem {
++  final IconData icon;
++  final String label;
++  final String? value;
++  final bool hasArrow;
++
++  _MenuItem({
++    required this.icon,
++    required this.label,
++    this.value,
++    this.hasArrow = false,
++  });
++}
+diff --git a/pairapp_mobile/lib/features/randomizer/randomizer_screen.dart b/pairapp_mobile/lib/features/randomizer/randomizer_screen.dart
+new file mode 100644
+index 0000000..74c14bb
+--- /dev/null
++++ b/pairapp_mobile/lib/features/randomizer/randomizer_screen.dart
+@@ -0,0 +1,195 @@
++import 'dart:math';
++import 'package:flutter/material.dart';
++import '../../theme/app_colors.dart';
++import '../../shared/models/mock_data.dart';
++import '../../shared/widgets/gradient_button.dart';
++
++class RandomizerScreen extends StatefulWidget {
++  const RandomizerScreen({super.key});
++
++  @override
++  State<RandomizerScreen> createState() => _RandomizerScreenState();
++}
++
++class _RandomizerScreenState extends State<RandomizerScreen>
++    with SingleTickerProviderStateMixin {
++  late AnimationController _controller;
++  late Animation<double> _scaleAnim;
++  String _currentActivity = MockData.randomActivities[0];
++  final _random = Random();
++
++  @override
++  void initState() {
++    super.initState();
++    _controller = AnimationController(
++      vsync: this,
++      duration: const Duration(milliseconds: 300),
++    );
++    _scaleAnim = Tween<double>(begin: 1.0, end: 0.9).animate(
++      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
++    );
++  }
++
++  @override
++  void dispose() {
++    _controller.dispose();
++    super.dispose();
++  }
++
++  void _nextActivity() async {
++    await _controller.forward();
++    setState(() {
++      _currentActivity = MockData.randomActivities[
++          _random.nextInt(MockData.randomActivities.length)];
++    });
++    await _controller.reverse();
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      body: Container(
++        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
++        child: SafeArea(
++          child: Column(
++            children: [
++              _buildAppBar(context),
++              Expanded(
++                child: Padding(
++                  padding: const EdgeInsets.symmetric(horizontal: 24),
++                  child: Column(
++                    mainAxisAlignment: MainAxisAlignment.center,
++                    children: [
++                      _buildGlowCircle(),
++                      const SizedBox(height: 32),
++                      ScaleTransition(
++                        scale: _scaleAnim,
++                        child: _buildActivityCard(),
++                      ),
++                      const SizedBox(height: 40),
++                      GradientButton(
++                        label: 'Ещё вариант',
++                        icon: Icons.refresh_rounded,
++                        width: double.infinity,
++                        height: 56,
++                        onTap: _nextActivity,
++                      ),
++                      const SizedBox(height: 16),
++                      TextButton.icon(
++                        onPressed: () {},
++                        icon: const Icon(Icons.favorite_border,
++                            size: 16, color: AppColors.textMuted),
++                        label: const Text(
++                          'Сохранить идею',
++                          style: TextStyle(color: AppColors.textMuted),
++                        ),
++                      ),
++                    ],
++                  ),
++                ),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildAppBar(BuildContext context) {
++    return Padding(
++      padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
++      child: Row(
++        children: [
++          IconButton(
++            onPressed: () => Navigator.pop(context),
++            icon: const Icon(Icons.arrow_back_ios_new,
++                color: AppColors.textPrimary, size: 18),
++          ),
++          Expanded(
++            child: Text(
++              'Рандом занятие',
++              style: Theme.of(context).textTheme.titleLarge,
++              textAlign: TextAlign.center,
++            ),
++          ),
++          const SizedBox(width: 48),
++        ],
++      ),
++    );
++  }
++
++  Widget _buildGlowCircle() {
++    return Stack(
++      alignment: Alignment.center,
++      children: [
++        Container(
++          width: 140,
++          height: 140,
++          decoration: const BoxDecoration(
++            shape: BoxShape.circle,
++            gradient: AppColors.heartGlow,
++          ),
++        ),
++        Container(
++          width: 88,
++          height: 88,
++          decoration: BoxDecoration(
++            gradient: AppColors.purpleGradient,
++            shape: BoxShape.circle,
++            boxShadow: [
++              BoxShadow(
++                color: AppColors.purple.withValues(alpha: 0.5),
++                blurRadius: 24,
++                offset: const Offset(0, 4),
++              ),
++            ],
++          ),
++          child: const Icon(Icons.shuffle_rounded,
++              color: Colors.white, size: 38),
++        ),
++      ],
++    );
++  }
++
++  Widget _buildActivityCard() {
++    return Container(
++      width: double.infinity,
++      padding: const EdgeInsets.all(28),
++      decoration: BoxDecoration(
++        color: AppColors.bgCard,
++        borderRadius: BorderRadius.circular(24),
++        border: Border.all(color: AppColors.bgCardLight),
++        boxShadow: [
++          BoxShadow(
++            color: AppColors.purple.withValues(alpha: 0.08),
++            blurRadius: 30,
++            offset: const Offset(0, 8),
++          ),
++        ],
++      ),
++      child: Column(
++        children: [
++          const Text(
++            'Идея для вас 💜',
++            style: TextStyle(
++              fontSize: 13,
++              color: AppColors.textMuted,
++              letterSpacing: 0.5,
++            ),
++          ),
++          const SizedBox(height: 16),
++          Text(
++            _currentActivity,
++            textAlign: TextAlign.center,
++            style: const TextStyle(
++              fontSize: 22,
++              fontWeight: FontWeight.bold,
++              color: AppColors.textPrimary,
++              height: 1.3,
++            ),
++          ),
++        ],
++      ),
++    );
++  }
++}
+diff --git a/pairapp_mobile/lib/main.dart b/pairapp_mobile/lib/main.dart
+index 1ef7216..2ac1c5b 100644
+--- a/pairapp_mobile/lib/main.dart
++++ b/pairapp_mobile/lib/main.dart
+@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
+ 
+ import 'core/firebase/firebase_setup.dart';
+ import 'firebase_options.dart';
++import 'app/app_shell.dart';
++import 'theme/app_theme.dart';
+ 
+ Future<void> main() async {
+   WidgetsFlutterBinding.ensureInitialized();
+@@ -24,27 +26,8 @@ class PairApp extends StatelessWidget {
+     return MaterialApp(
+       title: 'PairApp',
+       debugShowCheckedModeBanner: false,
+-      theme: ThemeData(
+-        brightness: Brightness.dark,
+-        useMaterial3: true,
+-      ),
+-      home: const StartupScreen(),
++      theme: AppTheme.dark,
++      home: const AppShell(),
+     );
+   }
+ }
+-
+-class StartupScreen extends StatelessWidget {
+-  const StartupScreen({super.key});
+-
+-  @override
+-  Widget build(BuildContext context) {
+-    return const Scaffold(
+-      body: Center(
+-        child: Text(
+-          'PairApp mobile started',
+-          style: TextStyle(fontSize: 22),
+-        ),
+-      ),
+-    );
+-  }
+-}
+\ No newline at end of file
+diff --git a/pairapp_mobile/lib/shared/models/mock_data.dart b/pairapp_mobile/lib/shared/models/mock_data.dart
+new file mode 100644
+index 0000000..328e158
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/models/mock_data.dart
+@@ -0,0 +1,101 @@
++class MockIssue {
++  final String id;
++  final String title;
++  final String description;
++  final String author;
++  final String status; // open | discussion | resolved
++  final String category;
++  final int importance;
++  final DateTime createdAt;
++
++  const MockIssue({
++    required this.id,
++    required this.title,
++    required this.description,
++    required this.author,
++    required this.status,
++    required this.category,
++    required this.importance,
++    required this.createdAt,
++  });
++}
++
++class MockMessage {
++  final String text;
++  final bool isMe;
++  final DateTime time;
++
++  const MockMessage({required this.text, required this.isMe, required this.time});
++}
++
++class MockAgreement {
++  final String title;
++  final String status; // active | done
++  final String createdBy;
++
++  const MockAgreement({
++    required this.title,
++    required this.status,
++    required this.createdBy,
++  });
++}
++
++class MockData {
++  static final List<MockIssue> issues = [
++    MockIssue(
++      id: '1',
++      title: 'Нет времени на совместные вечера',
++      description: 'Мы редко проводим время вдвоём без телефонов.',
++      author: 'Анна',
++      status: 'open',
++      category: 'Время',
++      importance: 4,
++      createdAt: DateTime.now().subtract(const Duration(days: 2)),
++    ),
++    MockIssue(
++      id: '2',
++      title: 'Финансовое планирование',
++      description: 'Нужно обсудить бюджет на следующий месяц.',
++      author: 'Павел',
++      status: 'discussion',
++      category: 'Финансы',
++      importance: 3,
++      createdAt: DateTime.now().subtract(const Duration(days: 5)),
++    ),
++    MockIssue(
++      id: '3',
++      title: 'Распределение домашних дел',
++      description: 'Хочу пересмотреть, кто что делает дома.',
++      author: 'Анна',
++      status: 'resolved',
++      category: 'Быт',
++      importance: 2,
++      createdAt: DateTime.now().subtract(const Duration(days: 10)),
++    ),
++  ];
++
++  static final List<MockMessage> messages = [
++    MockMessage(text: 'Привет! Можем обсудить это сегодня вечером?', isMe: false, time: DateTime.now().subtract(const Duration(minutes: 30))),
++    MockMessage(text: 'Да, конечно. Я буду дома около 8.', isMe: true, time: DateTime.now().subtract(const Duration(minutes: 25))),
++    MockMessage(text: 'Хорошо, подготовлю свои мысли на эту тему.', isMe: false, time: DateTime.now().subtract(const Duration(minutes: 20))),
++    MockMessage(text: 'Отлично 💜 Давай попробуем найти решение вместе', isMe: true, time: DateTime.now().subtract(const Duration(minutes: 10))),
++  ];
++
++  static final List<MockAgreement> agreements = [
++    MockAgreement(title: 'Совместный ужин каждую пятницу', status: 'active', createdBy: 'Оба'),
++    MockAgreement(title: 'Не проверять телефоны во время еды', status: 'active', createdBy: 'Анна'),
++    MockAgreement(title: 'Убираться по очереди', status: 'done', createdBy: 'Павел'),
++    MockAgreement(title: 'Ежемесячный финансовый разговор', status: 'active', createdBy: 'Оба'),
++  ];
++
++  static const List<String> randomActivities = [
++    'Приготовить новое блюдо вместе 🍝',
++    'Пешая прогулка в незнакомом месте 🌿',
++    'Настольная игра при свечах 🕯️',
++    'Посмотреть старый любимый фильм 🎬',
++    'Сделать друг другу массаж 💆',
++    'Нарисовать портреты друг друга 🎨',
++    'Спонтанная поездка за город 🚗',
++    'Квест в городе 🗺️',
++  ];
++}
+diff --git a/pairapp_mobile/lib/shared/widgets/app_card.dart b/pairapp_mobile/lib/shared/widgets/app_card.dart
+new file mode 100644
+index 0000000..a6cb1d8
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/widgets/app_card.dart
+@@ -0,0 +1,38 @@
++import 'package:flutter/material.dart';
++import '../../theme/app_colors.dart';
++
++class AppCard extends StatelessWidget {
++  final Widget child;
++  final EdgeInsetsGeometry? padding;
++  final VoidCallback? onTap;
++  final Color? color;
++  final double borderRadius;
++
++  const AppCard({
++    super.key,
++    required this.child,
++    this.padding,
++    this.onTap,
++    this.color,
++    this.borderRadius = 20,
++  });
++
++  @override
++  Widget build(BuildContext context) {
++    return GestureDetector(
++      onTap: onTap,
++      child: Container(
++        padding: padding ?? const EdgeInsets.all(16),
++        decoration: BoxDecoration(
++          color: color ?? AppColors.bgCard,
++          borderRadius: BorderRadius.circular(borderRadius),
++          border: Border.all(
++            color: AppColors.bgCardLight,
++            width: 1,
++          ),
++        ),
++        child: child,
++      ),
++    );
++  }
++}
+diff --git a/pairapp_mobile/lib/shared/widgets/gradient_button.dart b/pairapp_mobile/lib/shared/widgets/gradient_button.dart
+new file mode 100644
+index 0000000..033766d
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/widgets/gradient_button.dart
+@@ -0,0 +1,58 @@
++import 'package:flutter/material.dart';
++import '../../theme/app_colors.dart';
++
++class GradientButton extends StatelessWidget {
++  final String label;
++  final VoidCallback onTap;
++  final IconData? icon;
++  final double? width;
++  final double height;
++
++  const GradientButton({
++    super.key,
++    required this.label,
++    required this.onTap,
++    this.icon,
++    this.width,
++    this.height = 52,
++  });
++
++  @override
++  Widget build(BuildContext context) {
++    return GestureDetector(
++      onTap: onTap,
++      child: Container(
++        width: width,
++        height: height,
++        decoration: BoxDecoration(
++          gradient: AppColors.purpleGradient,
++          borderRadius: BorderRadius.circular(14),
++          boxShadow: [
++            BoxShadow(
++              color: AppColors.purple.withValues(alpha: 0.4),
++              blurRadius: 16,
++              offset: const Offset(0, 4),
++            ),
++          ],
++        ),
++        child: Row(
++          mainAxisAlignment: MainAxisAlignment.center,
++          children: [
++            if (icon != null) ...[
++              Icon(icon, color: Colors.white, size: 18),
++              const SizedBox(width: 8),
++            ],
++            Text(
++              label,
++              style: const TextStyle(
++                color: Colors.white,
++                fontSize: 15,
++                fontWeight: FontWeight.w600,
++              ),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++}
+diff --git a/pairapp_mobile/lib/shared/widgets/status_badge.dart b/pairapp_mobile/lib/shared/widgets/status_badge.dart
+new file mode 100644
+index 0000000..0a71009
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/widgets/status_badge.dart
+@@ -0,0 +1,37 @@
++import 'package:flutter/material.dart';
++import '../../theme/app_colors.dart';
++
++class StatusBadge extends StatelessWidget {
++  final String status;
++
++  const StatusBadge({super.key, required this.status});
++
++  @override
++  Widget build(BuildContext context) {
++    final (label, color) = switch (status) {
++      'open' => ('Открыта', AppColors.statusOpen),
++      'discussion' => ('Обсуждение', AppColors.statusDiscussion),
++      'resolved' => ('Решена', AppColors.statusResolved),
++      'active' => ('Активно', AppColors.statusOpen),
++      'done' => ('Выполнено', AppColors.statusResolved),
++      _ => (status, AppColors.textMuted),
++    };
++
++    return Container(
++      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
++      decoration: BoxDecoration(
++        color: color.withValues(alpha: 0.15),
++        borderRadius: BorderRadius.circular(20),
++        border: Border.all(color: color.withValues(alpha: 0.4), width: 1),
++      ),
++      child: Text(
++        label,
++        style: TextStyle(
++          color: color,
++          fontSize: 11,
++          fontWeight: FontWeight.w600,
++        ),
++      ),
++    );
++  }
++}
+diff --git a/pairapp_mobile/lib/theme/app_colors.dart b/pairapp_mobile/lib/theme/app_colors.dart
+new file mode 100644
+index 0000000..d5a54a4
+--- /dev/null
++++ b/pairapp_mobile/lib/theme/app_colors.dart
+@@ -0,0 +1,46 @@
++import 'package:flutter/material.dart';
++
++class AppColors {
++  AppColors._();
++
++  // Backgrounds
++  static const Color bgDeep = Color(0xFF0A0B14);
++  static const Color bgSurface = Color(0xFF111228);
++  static const Color bgCard = Color(0xFF181A2E);
++  static const Color bgCardLight = Color(0xFF1E2040);
++
++  // Accents
++  static const Color purple = Color(0xFF7C5CFC);
++  static const Color purpleLight = Color(0xFF9D7FFF);
++  static const Color lavender = Color(0xFFB79CFF);
++  static const Color pinkPurple = Color(0xFFD46FFF);
++  static const Color roseAccent = Color(0xFFFF6B9D);
++
++  // Text
++  static const Color textPrimary = Color(0xFFF0EEFF);
++  static const Color textSecondary = Color(0xFF9B98C4);
++  static const Color textMuted = Color(0xFF5C5A80);
++
++  // Status
++  static const Color statusOpen = Color(0xFF7C5CFC);
++  static const Color statusDiscussion = Color(0xFFFFB74D);
++  static const Color statusResolved = Color(0xFF66BB6A);
++
++  // Gradients
++  static const LinearGradient purpleGradient = LinearGradient(
++    colors: [Color(0xFF7C5CFC), Color(0xFFD46FFF)],
++    begin: Alignment.topLeft,
++    end: Alignment.bottomRight,
++  );
++
++  static const LinearGradient bgGradient = LinearGradient(
++    colors: [Color(0xFF0A0B14), Color(0xFF0F1020)],
++    begin: Alignment.topCenter,
++    end: Alignment.bottomCenter,
++  );
++
++  static const RadialGradient heartGlow = RadialGradient(
++    colors: [Color(0x557C5CFC), Color(0x22D46FFF), Colors.transparent],
++    radius: 0.8,
++  );
++}
+diff --git a/pairapp_mobile/lib/theme/app_theme.dart b/pairapp_mobile/lib/theme/app_theme.dart
+new file mode 100644
+index 0000000..3569a91
+--- /dev/null
++++ b/pairapp_mobile/lib/theme/app_theme.dart
+@@ -0,0 +1,130 @@
++import 'package:flutter/material.dart';
++import 'app_colors.dart';
++
++class AppTheme {
++  AppTheme._();
++
++  static ThemeData get dark {
++    return ThemeData(
++      useMaterial3: true,
++      brightness: Brightness.dark,
++      scaffoldBackgroundColor: AppColors.bgDeep,
++      colorScheme: const ColorScheme.dark(
++        brightness: Brightness.dark,
++        primary: AppColors.purple,
++        secondary: AppColors.pinkPurple,
++        surface: AppColors.bgSurface,
++        onPrimary: Colors.white,
++        onSecondary: Colors.white,
++        onSurface: AppColors.textPrimary,
++      ),
++      fontFamily: 'Roboto',
++      textTheme: const TextTheme(
++        displayLarge: TextStyle(
++          fontSize: 28,
++          fontWeight: FontWeight.bold,
++          color: AppColors.textPrimary,
++          letterSpacing: -0.5,
++        ),
++        displayMedium: TextStyle(
++          fontSize: 22,
++          fontWeight: FontWeight.bold,
++          color: AppColors.textPrimary,
++        ),
++        titleLarge: TextStyle(
++          fontSize: 18,
++          fontWeight: FontWeight.w600,
++          color: AppColors.textPrimary,
++        ),
++        titleMedium: TextStyle(
++          fontSize: 15,
++          fontWeight: FontWeight.w500,
++          color: AppColors.textPrimary,
++        ),
++        bodyLarge: TextStyle(
++          fontSize: 14,
++          color: AppColors.textPrimary,
++        ),
++        bodyMedium: TextStyle(
++          fontSize: 13,
++          color: AppColors.textSecondary,
++        ),
++        labelSmall: TextStyle(
++          fontSize: 11,
++          color: AppColors.textMuted,
++          letterSpacing: 0.5,
++        ),
++      ),
++      cardTheme: CardTheme(
++        color: AppColors.bgCard,
++        elevation: 0,
++        shape: RoundedRectangleBorder(
++          borderRadius: BorderRadius.circular(20),
++        ),
++      ),
++      appBarTheme: const AppBarTheme(
++        backgroundColor: AppColors.bgDeep,
++        elevation: 0,
++        centerTitle: true,
++        titleTextStyle: TextStyle(
++          fontSize: 17,
++          fontWeight: FontWeight.w600,
++          color: AppColors.textPrimary,
++          letterSpacing: 0.2,
++        ),
++        iconTheme: IconThemeData(color: AppColors.textPrimary),
++      ),
++      bottomNavigationBarTheme: const BottomNavigationBarThemeData(
++        backgroundColor: AppColors.bgSurface,
++        selectedItemColor: AppColors.purple,
++        unselectedItemColor: AppColors.textMuted,
++        showSelectedLabels: true,
++        showUnselectedLabels: true,
++        type: BottomNavigationBarType.fixed,
++        selectedLabelStyle: TextStyle(fontSize: 10, fontWeight: FontWeight.w600),
++        unselectedLabelStyle: TextStyle(fontSize: 10),
++      ),
++      inputDecorationTheme: InputDecorationTheme(
++        filled: true,
++        fillColor: AppColors.bgCard,
++        border: OutlineInputBorder(
++          borderRadius: BorderRadius.circular(14),
++          borderSide: BorderSide.none,
++        ),
++        focusedBorder: OutlineInputBorder(
++          borderRadius: BorderRadius.circular(14),
++          borderSide: const BorderSide(color: AppColors.purple, width: 1.5),
++        ),
++        hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 14),
++        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
++      ),
++      elevatedButtonTheme: ElevatedButtonThemeData(
++        style: ElevatedButton.styleFrom(
++          backgroundColor: AppColors.purple,
++          foregroundColor: Colors.white,
++          elevation: 0,
++          shape: RoundedRectangleBorder(
++            borderRadius: BorderRadius.circular(14),
++          ),
++          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
++          textStyle: const TextStyle(
++            fontSize: 15,
++            fontWeight: FontWeight.w600,
++          ),
++        ),
++      ),
++      chipTheme: ChipThemeData(
++        backgroundColor: AppColors.bgCard,
++        selectedColor: AppColors.purple.withValues(alpha: 0.3),
++        side: const BorderSide(color: AppColors.bgCardLight),
++        labelStyle: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
++        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
++        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
++      ),
++      dividerTheme: const DividerThemeData(
++        color: AppColors.bgCardLight,
++        thickness: 1,
++      ),
++    );
++  }
++}

@@ -1,0 +1,47 @@
+# Node / Firebase backend
+**/node_modules/
+**/functions/lib/
+**/firebase-debug.log
+**/firestore-debug.log
+**/pubsub-debug.log
+**/storage-debug.log
+**/ui-debug.log
+**/*.log
+
+# Firebase local/emulator
+**/.firebase/
+**/emulator-data/
+
+# Flutter / Dart
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/build/
+**/coverage/
+
+# Android / Gradle
+**/.gradle/
+**/android/.gradle/
+**/android/app/build/
+**/local.properties
+
+# iOS / macOS
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/ephemeral/
+**/macos/Flutter/ephemeral/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary
+runlog.txt
+*.tmp
+echo app.rar>> .gitignore
+echo *.rar>> .gitignore
+echo *.zip>> .gitignore
+echo *.7z>> .gitignore

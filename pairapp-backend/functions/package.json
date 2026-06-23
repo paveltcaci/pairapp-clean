@@ -1,0 +1,50 @@
+{
+  "name": "pairapp-functions",
+  "version": "1.0.0",
+  "description": "PairApp backend — Firebase Cloud Functions (TypeScript)",
+  "private": true,
+  "engines": {
+    "node": "20"
+  },
+  "main": "lib/index.js",
+  "scripts": {
+  "build": "tsc",
+  "build:watch": "tsc --watch",
+  "serve": "npm run build && firebase emulators:start --only auth,firestore,functions,storage,pubsub",
+  "shell": "npm run build && firebase functions:shell",
+  "start": "npm run shell",
+  "deploy": "firebase deploy --only functions,firestore:rules,firestore:indexes,storage",
+  "deploy:functions": "firebase deploy --only functions",
+  "logs": "firebase functions:log",
+  "lint": "eslint --ext .js,.ts .",
+  "seed": "node lib/scripts/seed-content.js",
+  "smoke:core": "node smoke-test.js",
+  "smoke:quiz": "node quiz-smoke-test.js",
+  "smoke:rules": "node firestore-rules-smoke-test.js",
+  "smoke:checkin": "node checkin-smoke-test.js",
+  "smoke:moderation": "node moderation-smoke-test.js",
+  "smoke:push": "node push-text-smoke-test.js",
+  "smoke:all": "npm run build && npm run smoke:push && npm run smoke:core && npm run smoke:quiz && npm run smoke:rules && npm run smoke:checkin && npm run smoke:moderation",
+  "test": "npm run smoke:all"
+},
+  "dependencies": {
+    "firebase-admin": "^12.6.0",
+    "firebase-functions": "^6.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
+    "@types/jest": "^29.5.13",
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "^8.57.0",
+    "eslint-config-google": "^0.14.0",
+    "eslint-plugin-import": "^2.30.0",
+    "firebase": "^12.15.0",
+    "firebase-functions-test": "^3.4.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.5.4"
+  }
+}

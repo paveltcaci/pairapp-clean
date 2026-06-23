@@ -1,0 +1,24 @@
+rules_version = '2';
+
+// Storage используется только для аватаров профиля (раздел 15.2 ТЗ:
+// "Сменить имя / аватар"). Путь avatars/{userId}/... — каждый
+// пользователь управляет только своей папкой; читать аватар может
+// любой авторизованный пользователь (он публично виден партнёру и
+// потенциально на будущих экранах), запись и удаление — только владелец.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /avatars/{userId}/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null &&
+        request.auth.uid == userId &&
+        request.resource.size < 5 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*');
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Запрет на всё остальное по умолчанию.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

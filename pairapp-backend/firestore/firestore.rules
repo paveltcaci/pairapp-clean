@@ -1,0 +1,206 @@
+rules_version = '2';
+
+/**
+ * Firestore Security Rules — раздел 21 ТЗ:
+ * "Правила безопасности Firestore: пара видит только свои данные"
+ * "Запрет на чтение данных чужих пар"
+ *
+ * Принцип построения: бизнес-логика, которая МЕНЯЕТ данные, живёт в
+ * Cloud Functions (модули src/modules/*) — эти правила НЕ дублируют её,
+ * они только разрешают/запрещают ЧТЕНИЕ напрямую с клиента и закрывают
+ * прямую запись там, где она должна идти исключительно через callable-
+ * функции (чтобы клиент не мог обойти проверки статусов/переходов).
+ *
+ * Общая стратегия записи:
+ * - users: пользователь управляет только своим документом, и только
+ *   ограниченным набором полей (через Cloud Functions); прямая клиентская
+ *   запись запрещена полностью — даже "безобидные" поля типа displayName
+ *   должны идти через updateProfile, чтобы updatedAt/валидация были
+ *   гарантированы централизованно.
+ * - Все остальные коллекции: запись ЗАПРЕЩЕНА с клиента целиком. Все
+ *   мутации идут через Cloud Functions (Admin SDK обходит security rules
+ *   по дизайну Firebase, поэтому это не блокирует backend).
+ * - Чтение: разрешено участникам соответствующей пары, по правилу
+ *   "состоишь в паре => видишь её данные" (раздел 21 ТЗ).
+ */
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Вспомогательные функции ----------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.role == 'admin';
+    }
+
+    // Раньше эта проверка делала get() на /couples/{coupleId}, что
+    // означало два read'а security rules на каждое чтение (документ
+    // пары + документ ресурса). Эквивалентный и дешевле в 2 раза вариант:
+    // у каждого пользователя уже есть currentCoupleId (раздел 17.1 ТЗ),
+    // обновляемый строго через Cloud Functions при входе/выходе из пары —
+    // поэтому "состою в паре X" эквивалентно "мой currentCoupleId == X",
+    // без необходимости заглядывать в сам документ couples.
+    function isMemberOfCouple(coupleId) {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.currentCoupleId == coupleId;
+    }
+
+    // ---------- users ----------
+    match /users/{userId} {
+      // Раздел 21 ТЗ не требует, чтобы пользователь видел партнёра целиком
+      // напрямую из Firestore — экраны профиля партнёра получают нужные
+      // публичные поля (displayName/avatarUrl) тем же документом, поэтому
+      // разрешаем чтение себе и партнёру (партнёр определяется через его
+      // currentCoupleId совпадающий с собственным).
+      allow read: if isSelf(userId) ||
+        (isSignedIn() &&
+         resource.data.currentCoupleId != null &&
+         resource.data.currentCoupleId ==
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.currentCoupleId);
+      // Вся запись — через Cloud Functions (Admin SDK), не напрямую.
+      allow write: if false;
+    }
+
+    // ---------- couples ----------
+    match /couples/{coupleId} {
+      allow read: if isSignedIn() &&
+        (resource.data.partnerAId == request.auth.uid ||
+         resource.data.partnerBId == request.auth.uid);
+      allow write: if false;
+    }
+
+    // ---------- issues ----------
+    match /issues/{issueId} {
+      allow read: if isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
+    // ---------- issue_messages ----------
+    match /issue_messages/{messageId} {
+      allow read: if isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
+    // ---------- agreements ----------
+    match /agreements/{agreementId} {
+      allow read: if isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
+    // ---------- checkins ----------
+    match /checkins/{checkinId} {
+      allow read: if isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
+    // ---------- activities ----------
+    // Раздел 17.7 ТЗ: coupleId == null для встроенных активностей,
+    // видимых всем парам; иначе видна только своей паре.
+    match /activities/{activityId} {
+      allow read: if resource.data.coupleId == null ||
+        isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
+    // ---------- activity_history ----------
+    match /activity_history/{historyId} {
+      allow read: if isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
+    // ---------- chore_tasks ----------
+    match /chore_tasks/{taskId} {
+      allow read: if isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
+    // ---------- chore_spins ----------
+    match /chore_spins/{spinId} {
+      allow read: if isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
+    // ---------- quiz_questions ----------
+    // Банк вопросов — общий контент, не привязан к паре (раздел 17.11 ТЗ).
+    // Видим всем авторизованным пользователям, чтобы клиент могу
+    // показать превью категорий до старта сессии.
+    match /quiz_questions/{questionId} {
+      allow read: if isSignedIn() && resource.data.isActive == true;
+      allow write: if false;
+    }
+
+    // ---------- quiz_sessions ----------
+    // В документе сессии больше нет самих ответов партнёров.
+    // Здесь лежит только статус, список вопросов и итоговый score.
+    match /quiz_sessions/{sessionId} {
+      allow read: if isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
+    // ---------- quiz_answers ----------
+    // До завершения квиза пользователь может читать только свой документ ответов.
+    // После завершения сессии оба партнёра могут читать оба документа ответов,
+    // чтобы показать экран результата.
+    match /quiz_answers/{answerId} {
+      allow read: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        (
+          isMemberOfCouple(resource.data.coupleId) &&
+          get(/databases/$(database)/documents/quiz_sessions/$(resource.data.sessionId)).data.status == 'completed'
+        )
+      );
+      allow write: if false;
+    }
+
+    // ---------- relationship_events ----------
+    match /relationship_events/{eventId} {
+      allow read: if isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
+    // ---------- reports ----------
+    // Раздел 16 ТЗ — жалобы видны только их автору (и админам через
+    // отдельный путь/панель, не через клиентский SDK).
+    match /reports/{reportId} {
+      allow read: if isSignedIn() && resource.data.reporterId == request.auth.uid;
+      allow write: if false;
+    }
+
+    // ---------- subscriptions ----------
+    match /subscriptions/{subscriptionId} {
+      allow read: if isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
+    // ---------- audit_logs ----------
+    // Только для административной панели — не предназначены для
+    // чтения клиентским приложением пары.
+    match /audit_logs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // ---------- Административный доступ (раздел 23 ТЗ) ----------
+    // Админы читают любые данные через панель управления — это отдельный
+    // клиент (веб-панель), не мобильное приложение пары. Запись остаётся
+    // запрещённой и здесь: даже админ-панель проводит мутации через
+    // защищённые Cloud Functions (requireAdmin), чтобы каждое действие
+    // проходило через audit-логирование (см. utils/audit-log.ts).
+    match /{collection}/{docId} {
+      allow read: if isAdmin() &&
+        collection in [
+          'users', 'couples', 'issues', 'issue_messages', 'agreements',
+          'checkins', 'activities', 'activity_history', 'chore_tasks',
+          'chore_spins', 'quiz_questions', 'quiz_sessions', 'quiz_answers',
+          'relationship_events', 'reports', 'subscriptions'
+        ];
+    }
+  }
+}

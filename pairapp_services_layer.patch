@@ -1,0 +1,421 @@
+diff --git a/pairapp_mobile/lib/shared/models/app_user.dart b/pairapp_mobile/lib/shared/models/app_user.dart
+new file mode 100644
+index 0000000..1b669e0
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/models/app_user.dart
+@@ -0,0 +1,68 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++
++class AppUser {
++  final String id;
++  final String? email;
++  final String? displayName;
++  final String? avatarUrl;
++  final String? birthDate;
++  final String? gender;
++  final String? language;
++  final String? currentCoupleId;
++  final bool isDeleted;
++  final bool isBlocked;
++  final DateTime? acceptedTermsOfUseAt;
++  final DateTime? acceptedPrivacyPolicyAt;
++
++  const AppUser({
++    required this.id,
++    this.email,
++    this.displayName,
++    this.avatarUrl,
++    this.birthDate,
++    this.gender,
++    this.language,
++    this.currentCoupleId,
++    this.isDeleted = false,
++    this.isBlocked = false,
++    this.acceptedTermsOfUseAt,
++    this.acceptedPrivacyPolicyAt,
++  });
++
++  /// True when the user has finished the profile completion step.
++  bool get isProfileCompleted =>
++      displayName != null &&
++      displayName!.isNotEmpty &&
++      acceptedTermsOfUseAt != null &&
++      acceptedPrivacyPolicyAt != null;
++
++  /// True when the user is linked to a couple.
++  bool get hasCouple =>
++      currentCoupleId != null && currentCoupleId!.isNotEmpty;
++
++  factory AppUser.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
++    final data = doc.data() ?? {};
++    return AppUser(
++      id: doc.id,
++      email: data['email'] as String?,
++      displayName: data['displayName'] as String?,
++      avatarUrl: data['avatarUrl'] as String?,
++      birthDate: data['birthDate'] as String?,
++      gender: data['gender'] as String?,
++      language: data['language'] as String?,
++      currentCoupleId: data['currentCoupleId'] as String?,
++      isDeleted: (data['isDeleted'] as bool?) ?? false,
++      isBlocked: (data['isBlocked'] as bool?) ?? false,
++      acceptedTermsOfUseAt:
++          _tsToDateTime(data['acceptedTermsOfUseAt']),
++      acceptedPrivacyPolicyAt:
++          _tsToDateTime(data['acceptedPrivacyPolicyAt']),
++    );
++  }
++
++  static DateTime? _tsToDateTime(dynamic value) {
++    if (value == null) return null;
++    if (value is Timestamp) return value.toDate();
++    return null;
++  }
++}
+diff --git a/pairapp_mobile/lib/shared/models/couple.dart b/pairapp_mobile/lib/shared/models/couple.dart
+new file mode 100644
+index 0000000..3532b60
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/models/couple.dart
+@@ -0,0 +1,38 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++
++class Couple {
++  final String id;
++  final String partnerAId;
++  final String? partnerBId;
++  final String inviteCode;
++  final bool inviteCodeUsed;
++  final String status;
++
++  const Couple({
++    required this.id,
++    required this.partnerAId,
++    this.partnerBId,
++    required this.inviteCode,
++    this.inviteCodeUsed = false,
++    required this.status,
++  });
++
++  /// True when the couple record has status 'active'.
++  bool get isActive => status == 'active';
++
++  /// True when a second partner has joined.
++  bool get hasBothPartners =>
++      partnerBId != null && partnerBId!.isNotEmpty;
++
++  factory Couple.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
++    final data = doc.data() ?? {};
++    return Couple(
++      id: doc.id,
++      partnerAId: (data['partnerAId'] as String?) ?? '',
++      partnerBId: data['partnerBId'] as String?,
++      inviteCode: (data['inviteCode'] as String?) ?? '',
++      inviteCodeUsed: (data['inviteCodeUsed'] as bool?) ?? false,
++      status: (data['status'] as String?) ?? '',
++    );
++  }
++}
+diff --git a/pairapp_mobile/lib/shared/services/auth_service.dart b/pairapp_mobile/lib/shared/services/auth_service.dart
+new file mode 100644
+index 0000000..19f4652
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/services/auth_service.dart
+@@ -0,0 +1,33 @@
++import 'package:firebase_auth/firebase_auth.dart';
++
++/// Thin wrapper around [FirebaseAuth] that exposes only what the app needs.
++class AuthService {
++  AuthService({FirebaseAuth? auth})
++      : _auth = auth ?? FirebaseAuth.instance;
++
++  final FirebaseAuth _auth;
++
++  // ── Reactive state ────────────────────────────────────────────────────────
++
++  /// Emits the current [User] whenever auth state changes (sign-in / sign-out).
++  Stream<User?> authStateChanges() => _auth.authStateChanges();
++
++  /// The synchronously available current user, or null if signed out.
++  User? get currentUser => _auth.currentUser;
++
++  // ── Auth actions ──────────────────────────────────────────────────────────
++
++  Future<UserCredential> signInWithEmailAndPassword(
++    String email,
++    String password,
++  ) =>
++      _auth.signInWithEmailAndPassword(email: email, password: password);
++
++  Future<UserCredential> registerWithEmailAndPassword(
++    String email,
++    String password,
++  ) =>
++      _auth.createUserWithEmailAndPassword(email: email, password: password);
++
++  Future<void> signOut() => _auth.signOut();
++}
+diff --git a/pairapp_mobile/lib/shared/services/couple_service.dart b/pairapp_mobile/lib/shared/services/couple_service.dart
+new file mode 100644
+index 0000000..a3b830b
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/services/couple_service.dart
+@@ -0,0 +1,79 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++
++import '../models/couple.dart';
++import 'functions_service.dart';
++
++// ── Result types ─────────────────────────────────────────────────────────────
++
++/// Returned by [CoupleService.createCouple].
++class CreateCoupleResult {
++  const CreateCoupleResult({
++    required this.coupleId,
++    required this.inviteCode,
++  });
++
++  final String coupleId;
++  final String inviteCode;
++}
++
++/// Returned by [CoupleService.joinCoupleByInviteCode].
++class JoinCoupleResult {
++  const JoinCoupleResult({required this.coupleId});
++
++  final String coupleId;
++}
++
++// ── Service ───────────────────────────────────────────────────────────────────
++
++/// Handles couple creation, joining, and real-time Firestore observation.
++class CoupleService {
++  CoupleService({
++    FirebaseFirestore? firestore,
++    FunctionsService? functions,
++  })  : _firestore = firestore ?? FirebaseFirestore.instance,
++        _functions = functions ?? FunctionsService();
++
++  final FirebaseFirestore _firestore;
++  final FunctionsService _functions;
++
++  // ── Internal helpers ──────────────────────────────────────────────────────
++
++  DocumentReference<Map<String, dynamic>> _coupleDoc(String coupleId) =>
++      _firestore.collection('couples').doc(coupleId);
++
++  // ── Public API ────────────────────────────────────────────────────────────
++
++  /// Creates a new couple and returns the couple ID and invite code.
++  Future<CreateCoupleResult> createCouple() async {
++    final result = await _functions.call('createCouple');
++    return CreateCoupleResult(
++      coupleId: result['coupleId'] as String,
++      inviteCode: result['inviteCode'] as String,
++    );
++  }
++
++  /// Joins an existing couple via an invite code.
++  ///
++  /// The code is trimmed and upper-cased before being sent to the backend.
++  Future<JoinCoupleResult> joinCoupleByInviteCode(String inviteCode) async {
++    final normalized = inviteCode.trim().toUpperCase();
++    final result = await _functions.call(
++      'joinCoupleByInviteCode',
++      {'inviteCode': normalized},
++    );
++    return JoinCoupleResult(coupleId: result['coupleId'] as String);
++  }
++
++  /// Real-time stream of a couple document.
++  /// Emits `null` when the document does not exist.
++  Stream<Couple?> watchCouple(String coupleId) =>
++      _coupleDoc(coupleId)
++          .snapshots()
++          .map((snap) => snap.exists ? Couple.fromFirestore(snap) : null);
++
++  /// One-shot fetch of a couple document.
++  Future<Couple?> getCouple(String coupleId) async {
++    final snap = await _coupleDoc(coupleId).get();
++    return snap.exists ? Couple.fromFirestore(snap) : null;
++  }
++}
+diff --git a/pairapp_mobile/lib/shared/services/functions_service.dart b/pairapp_mobile/lib/shared/services/functions_service.dart
+new file mode 100644
+index 0000000..e85e741
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/services/functions_service.dart
+@@ -0,0 +1,69 @@
++import 'package:cloud_functions/cloud_functions.dart';
++
++/// Wraps [FirebaseFunctions] and provides a single typed call method.
++///
++/// Errors are surfaced as [FunctionsCallException] so callers can present
++/// user-friendly messages without losing the original error code.
++class FunctionsService {
++  FunctionsService({FirebaseFunctions? functions})
++      : _functions = functions ??
++            FirebaseFunctions.instanceFor(region: 'us-central1');
++
++  final FirebaseFunctions _functions;
++
++  /// Calls the Cloud Function named [name] with optional [data].
++  ///
++  /// Returns the response payload as a [Map<String, dynamic>].
++  ///
++  /// Throws [FunctionsCallException] for [FirebaseFunctionsException],
++  /// or re-throws any other unexpected error.
++  Future<Map<String, dynamic>> call(
++    String name, [
++    Map<String, dynamic>? data,
++  ]) async {
++    try {
++      final callable = _functions.httpsCallable(name);
++      final result = await callable.call<dynamic>(data);
++
++      final raw = result.data;
++      if (raw is Map) {
++        return Map<String, dynamic>.from(raw);
++      }
++      // Unexpected shape – return empty map so callers stay type-safe.
++      return {};
++    } on FirebaseFunctionsException catch (e) {
++      throw FunctionsCallException(
++        code: e.code,
++        message: e.message ?? 'Unknown error from $name',
++        details: e.details,
++        original: e,
++      );
++    }
++  }
++}
++
++/// A typed wrapper around [FirebaseFunctionsException] that is easier to
++/// handle in UI layers without importing cloud_functions directly.
++class FunctionsCallException implements Exception {
++  const FunctionsCallException({
++    required this.code,
++    required this.message,
++    this.details,
++    this.original,
++  });
++
++  /// Firebase error code, e.g. `'not-found'`, `'already-exists'`.
++  final String code;
++
++  /// Human-readable error message.
++  final String message;
++
++  /// Optional extra details from the function.
++  final dynamic details;
++
++  /// The original [FirebaseFunctionsException], available for logging.
++  final FirebaseFunctionsException? original;
++
++  @override
++  String toString() => 'FunctionsCallException($code): $message';
++}
+diff --git a/pairapp_mobile/lib/shared/services/user_service.dart b/pairapp_mobile/lib/shared/services/user_service.dart
+new file mode 100644
+index 0000000..d22a1cb
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/services/user_service.dart
+@@ -0,0 +1,98 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++import 'package:firebase_auth/firebase_auth.dart';
++
++import '../models/app_user.dart';
++import 'functions_service.dart';
++
++/// Handles reading the Firestore user profile and calling the
++/// `completeUserProfile` callable function.
++class UserService {
++  UserService({
++    FirebaseFirestore? firestore,
++    FirebaseAuth? auth,
++    FunctionsService? functions,
++  })  : _firestore = firestore ?? FirebaseFirestore.instance,
++        _auth = auth ?? FirebaseAuth.instance,
++        _functions = functions ?? FunctionsService();
++
++  final FirebaseFirestore _firestore;
++  final FirebaseAuth _auth;
++  final FunctionsService _functions;
++
++  // ── Internal helpers ──────────────────────────────────────────────────────
++
++  DocumentReference<Map<String, dynamic>> _userDoc(String uid) =>
++      _firestore.collection('users').doc(uid);
++
++  String? get _uid => _auth.currentUser?.uid;
++
++  // ── Public API ────────────────────────────────────────────────────────────
++
++  /// Real-time stream of the signed-in user's Firestore profile.
++  /// Emits `null` when no user is signed in or the document is missing.
++  Stream<AppUser?> watchCurrentUserProfile() {
++    final uid = _uid;
++    if (uid == null) return const Stream.empty();
++
++    return _userDoc(uid)
++        .snapshots()
++        .map((snap) => snap.exists ? AppUser.fromFirestore(snap) : null);
++  }
++
++  /// One-shot fetch of the signed-in user's Firestore profile.
++  Future<AppUser?> getCurrentUserProfile() async {
++    final uid = _uid;
++    if (uid == null) return null;
++
++    final snap = await _userDoc(uid).get();
++    return snap.exists ? AppUser.fromFirestore(snap) : null;
++  }
++
++  /// Calls the `completeUserProfile` Cloud Function.
++  ///
++  /// Because the Firebase Auth `onCreate` trigger that creates the Firestore
++  /// document runs asynchronously, the document may not exist yet immediately
++  /// after registration. This method retries up to [_maxRetries] times with a
++  /// [_retryDelay] between attempts before giving up.
++  Future<void> completeUserProfile({
++    required String displayName,
++    required String gender,
++    required String birthDate,
++    required String language,
++  }) async {
++    const maxRetries = 5;
++    const retryDelay = Duration(milliseconds: 500);
++
++    final payload = <String, dynamic>{
++      'displayName': displayName,
++      'gender': gender,
++      'birthDate': birthDate,
++      'language': language,
++      'acceptedTermsOfUse': true,
++      'acceptedPrivacyPolicy': true,
++    };
++
++    for (var attempt = 1; attempt <= maxRetries; attempt++) {
++      try {
++        await _functions.call('completeUserProfile', payload);
++        return; // success
++      } on FunctionsCallException catch (e) {
++        if (e.code == 'not-found' && attempt < maxRetries) {
++          await Future<void>.delayed(retryDelay);
++          continue;
++        }
++        // Either a different error, or we've exhausted retries.
++        if (e.code == 'not-found') {
++          throw FunctionsCallException(
++            code: 'not-found',
++            message:
++                'User profile was not created in time. '
++                'Please try again in a moment.',
++            original: e.original,
++          );
++        }
++        rethrow;
++      }
++    }
++  }
++}
