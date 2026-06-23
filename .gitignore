@@ -45,3 +45,17 @@ echo app.rar>> .gitignore
 echo *.rar>> .gitignore
 echo *.zip>> .gitignore
 echo *.7z>> .gitignore
+
+echo UI/>> .gitignore
+echo _local_backup/>> .gitignore
+echo pairapp/>> .gitignore
+echo app.rar>> .gitignore
+echo *.rar>> .gitignore
+echo *.zip>> .gitignore
+echo *.7z>> .gitignore
+echo *.patch>> .gitignore
+echo *.log>> .gitignore
+echo node_modules/>> .gitignore
+echo .dart_tool/>> .gitignore
+echo build/>> .gitignore
+echo .firebase/>> .gitignore
