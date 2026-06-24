@@ -1,54 +1,145 @@
 import 'package:flutter/material.dart';
-import '../../theme/app_colors.dart';
-import '../../shared/widgets/app_card.dart';
 
-class HomeScreen extends StatelessWidget {
+import '../../shared/models/app_user.dart';
+import '../../shared/models/couple.dart';
+import '../../shared/services/couple_service.dart';
+import '../../shared/services/user_service.dart';
+import '../../shared/widgets/app_card.dart';
+import '../../theme/app_colors.dart';
+
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
   @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  final _userService = UserService();
+  final _coupleService = CoupleService();
+
+  Stream<_HomeData?> _watchHomeData() {
+    return _userService.watchCurrentUserProfile().asyncExpand((currentUser) {
+      if (currentUser == null) {
+        return Stream<_HomeData?>.value(null);
+      }
+
+      final coupleId = currentUser.currentCoupleId;
+      if (coupleId == null || coupleId.isEmpty) {
+        return Stream<_HomeData?>.value(
+          _HomeData(currentUser: currentUser, couple: null, partner: null),
+        );
+      }
+
+      return _coupleService.watchCouple(coupleId).asyncMap((couple) async {
+        if (couple == null) {
+          return _HomeData(
+            currentUser: currentUser,
+            couple: null,
+            partner: null,
+          );
+        }
+
+        final partnerId = couple.partnerAId == currentUser.id
+            ? couple.partnerBId
+            : couple.partnerAId;
+
+        AppUser? partner;
+        if (partnerId != null && partnerId.isNotEmpty) {
+          partner = await _userService.getUserProfile(partnerId);
+        }
+
+        return _HomeData(
+          currentUser: currentUser,
+          couple: couple,
+          partner: partner,
+        );
+      });
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                const SizedBox(height: 16),
-                _buildHeader(context),
-                const SizedBox(height: 32),
-                _buildHeartSection(),
-                const SizedBox(height: 28),
-                _buildStatsGrid(context),
-                const SizedBox(height: 24),
-              ],
+    return StreamBuilder<_HomeData?>(
+      stream: _watchHomeData(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: DecoratedBox(
+              decoration: BoxDecoration(gradient: AppColors.bgGradient),
+              child: Center(
+                child: CircularProgressIndicator(color: AppColors.purple),
+              ),
+            ),
+          );
+        }
+
+        final data = snapshot.data;
+        final currentUser = data?.currentUser;
+        final partner = data?.partner;
+
+        final currentName = _displayName(currentUser, fallback: 'Вы');
+        final partnerName = _displayName(partner, fallback: 'Партнёр');
+        final title = partner != null
+            ? '$currentName & $partnerName'
+            : currentUser != null
+                ? currentName
+                : 'PairApp';
+
+        return Scaffold(
+          body: Container(
+            decoration: const BoxDecoration(gradient: AppColors.bgGradient),
+            child: SafeArea(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    const SizedBox(height: 16),
+                    _buildHeader(context, title),
+                    const SizedBox(height: 32),
+                    _buildHeartSection(partner != null),
+                    const SizedBox(height: 28),
+                    _buildStatsGrid(context),
+                    const SizedBox(height: 24),
+                  ],
+                ),
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
-  Widget _buildHeader(BuildContext context) {
+  static String _displayName(AppUser? user, {required String fallback}) {
+    final name = user?.displayName?.trim();
+    return name == null || name.isEmpty ? fallback : name;
+  }
+
+  Widget _buildHeader(BuildContext context, String title) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Добрый вечер 🌙',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Анна & Павел',
-              style: Theme.of(context).textTheme.displayMedium,
-            ),
-          ],
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Добрый вечер 🌙',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.displayMedium,
+              ),
+            ],
+          ),
         ),
+        const SizedBox(width: 12),
         Stack(
           children: [
             Container(
@@ -58,8 +149,11 @@ class HomeScreen extends StatelessWidget {
                 gradient: AppColors.purpleGradient,
                 shape: BoxShape.circle,
               ),
-              child: const Icon(Icons.notifications_outlined,
-                  color: Colors.white, size: 20),
+              child: const Icon(
+                Icons.notifications_outlined,
+                color: Colors.white,
+                size: 20,
+              ),
             ),
             Positioned(
               right: 0,
@@ -80,13 +174,12 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildHeartSection() {
+  Widget _buildHeartSection(bool hasPartner) {
     return Column(
       children: [
         Stack(
           alignment: Alignment.center,
           children: [
-            // Glow background
             Container(
               width: 180,
               height: 180,
@@ -95,7 +188,6 @@ class HomeScreen extends StatelessWidget {
                 gradient: AppColors.heartGlow,
               ),
             ),
-            // Heart icon
             ShaderMask(
               shaderCallback: (bounds) =>
                   AppColors.purpleGradient.createShader(bounds),
@@ -117,9 +209,9 @@ class HomeScreen extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 6),
-        const Text(
-          '2 года, 3 месяца и 14 дней ✨',
-          style: TextStyle(
+        Text(
+          hasPartner ? 'Пара подключена ✨' : 'Ожидаем партнёра ✨',
+          style: const TextStyle(
             fontSize: 14,
             color: AppColors.textSecondary,
           ),
@@ -134,25 +226,25 @@ class HomeScreen extends StatelessWidget {
         icon: Icons.warning_amber_rounded,
         iconColor: AppColors.statusOpen,
         label: 'Открытые\nпроблемы',
-        value: '2',
+        value: '0',
       ),
       _StatItem(
         icon: Icons.handshake_outlined,
         iconColor: AppColors.lavender,
         label: 'Договорён-\nности',
-        value: '4',
+        value: '0',
       ),
       _StatItem(
         icon: Icons.local_activity_outlined,
         iconColor: AppColors.pinkPurple,
         label: 'Активные\nактивности',
-        value: '3',
+        value: '0',
       ),
       _StatItem(
         icon: Icons.chat_bubble_outline,
         iconColor: AppColors.roseAccent,
         label: 'Непрочитан-\nных',
-        value: '5',
+        value: '0',
       ),
     ];
 
@@ -208,6 +300,18 @@ class HomeScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+class _HomeData {
+  const _HomeData({
+    required this.currentUser,
+    required this.couple,
+    required this.partner,
+  });
+
+  final AppUser currentUser;
+  final Couple? couple;
+  final AppUser? partner;
 }
 
 class _StatItem {

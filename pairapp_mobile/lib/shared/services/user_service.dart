@@ -48,6 +48,26 @@ class UserService {
     return snap.exists ? AppUser.fromFirestore(snap) : null;
   }
 
+  /// UID of the currently signed-in Firebase user, or null if signed out.
+  String? get currentUid => _uid;
+
+  /// Alias for [watchCurrentUserProfile]. Useful for screens that need
+  /// a shorter name while still reading from the existing service layer.
+  Stream<AppUser?> watchCurrentUser() => watchCurrentUserProfile();
+
+  /// Real-time stream of any user's Firestore profile by uid.
+  Stream<AppUser?> watchUserProfile(String uid) {
+    return _userDoc(uid)
+        .snapshots()
+        .map((snap) => snap.exists ? AppUser.fromFirestore(snap) : null);
+  }
+
+  /// One-shot fetch of any user's Firestore profile by uid.
+  Future<AppUser?> getUserProfile(String uid) async {
+    final snap = await _userDoc(uid).get();
+    return snap.exists ? AppUser.fromFirestore(snap) : null;
+  }
+
   /// Calls the `completeUserProfile` Cloud Function.
   ///
   /// Because the Firebase Auth `onCreate` trigger that creates the Firestore

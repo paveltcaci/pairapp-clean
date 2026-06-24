@@ -1,0 +1,529 @@
+diff --git a/pairapp_mobile/lib/shared/services/user_service.dart b/pairapp_mobile/lib/shared/services/user_service.dart
+--- a/pairapp_mobile/lib/shared/services/user_service.dart
++++ b/pairapp_mobile/lib/shared/services/user_service.dart
+@@ -1,6 +1,9 @@
+ import 'package:cloud_firestore/cloud_firestore.dart';
++import 'package:firebase_auth/firebase_auth.dart';
+ import '../models/app_user.dart';
+ 
+ class UserService {
+   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
++  final FirebaseAuth _auth = FirebaseAuth.instance;
+ 
++  /// Returns the current Firebase user uid, or null if not signed in.
++  String? get currentUid => _auth.currentUser?.uid;
++
++  /// Stream of current user's profile from Firestore.
++  Stream<AppUser?> watchCurrentUser() {
++    final uid = currentUid;
++    if (uid == null) return Stream.value(null);
++    return watchUserProfile(uid);
++  }
++
++  /// Stream of any user's profile by uid.
++  Stream<AppUser?> watchUserProfile(String uid) {
++    return _firestore
++        .collection('users')
++        .doc(uid)
++        .snapshots()
++        .map((snap) => snap.exists ? AppUser.fromMap(snap.data()!) : null);
++  }
++
++  /// One-shot fetch of any user's profile by uid.
++  Future<AppUser?> getUserProfile(String uid) async {
++    final snap = await _firestore.collection('users').doc(uid).get();
++    if (!snap.exists) return null;
++    return AppUser.fromMap(snap.data()!);
++  }
+ }
+diff --git a/pairapp_mobile/lib/features/home/home_screen.dart b/pairapp_mobile/lib/features/home/home_screen.dart
+--- a/pairapp_mobile/lib/features/home/home_screen.dart
++++ b/pairapp_mobile/lib/features/home/home_screen.dart
+@@ -1,9 +1,19 @@
+ import 'package:flutter/material.dart';
++import 'package:firebase_auth/firebase_auth.dart';
+ import '../../shared/models/app_user.dart';
+ import '../../shared/models/couple.dart';
+ import '../../shared/services/user_service.dart';
+ import '../../shared/services/couple_service.dart';
+ import '../../core/theme/app_colors.dart';
+ 
+-class HomeScreen extends StatelessWidget {
+-  const HomeScreen({super.key});
++class HomeScreen extends StatefulWidget {
++  const HomeScreen({super.key});
++
++  @override
++  State<HomeScreen> createState() => _HomeScreenState();
++}
++
++class _HomeScreenState extends State<HomeScreen> {
++  final _userService = UserService();
++  final _coupleService = CoupleService();
++
++  Stream<_HomeData?> _buildHomeStream() {
++    final uid = FirebaseAuth.instance.currentUser?.uid;
++    if (uid == null) return Stream.value(null);
++
++    return _userService.watchUserProfile(uid).asyncExpand((currentUser) async* {
++      if (currentUser == null) {
++        yield null;
++        return;
++      }
++      final coupleId = currentUser.currentCoupleId;
++      if (coupleId == null || coupleId.isEmpty) {
++        yield _HomeData(currentUser: currentUser, couple: null, partner: null);
++        return;
++      }
++
++      await for (final couple in _coupleService.watchCouple(coupleId)) {
++        if (couple == null) {
++          yield _HomeData(currentUser: currentUser, couple: null, partner: null);
++          continue;
++        }
++        final partnerId = couple.partnerAId == currentUser.uid
++            ? couple.partnerBId
++            : couple.partnerAId;
++
++        AppUser? partner;
++        if (partnerId != null && partnerId.isNotEmpty) {
++          partner = await _userService.getUserProfile(partnerId);
++        }
++        yield _HomeData(currentUser: currentUser, couple: couple, partner: partner);
++      }
++    });
++  }
+ 
+   @override
+   Widget build(BuildContext context) {
+-    return Scaffold(
+-      backgroundColor: AppColors.background,
+-      body: SafeArea(
+-        child: SingleChildScrollView(
+-          padding: const EdgeInsets.all(20),
+-          child: Column(
+-            crossAxisAlignment: CrossAxisAlignment.start,
+-            children: [
+-              _buildHeader(context),
+-              const SizedBox(height: 24),
+-              _buildStatsRow(context),
+-              const SizedBox(height: 24),
+-              _buildQuickActions(context),
+-            ],
+-          ),
+-        ),
+-      ),
++    return StreamBuilder<_HomeData?>(
++      stream: _buildHomeStream(),
++      builder: (context, snapshot) {
++        if (snapshot.connectionState == ConnectionState.waiting) {
++          return const Scaffold(
++            backgroundColor: AppColors.background,
++            body: Center(child: CircularProgressIndicator(color: AppColors.primary)),
++          );
++        }
++
++        final data = snapshot.data;
++        final currentUser = data?.currentUser;
++        final partner = data?.partner;
++
++        final coupleTitle = (currentUser != null && partner != null)
++            ? '${partner.displayName} & ${currentUser.displayName}'
++            : currentUser != null
++                ? currentUser.displayName
++                : 'PairApp';
++
++        final partnerName = partner?.displayName ?? 'Партнёр';
++
++        return Scaffold(
++          backgroundColor: AppColors.background,
++          body: SafeArea(
++            child: SingleChildScrollView(
++              padding: const EdgeInsets.all(20),
++              child: Column(
++                crossAxisAlignment: CrossAxisAlignment.start,
++                children: [
++                  _buildHeader(context, coupleTitle),
++                  const SizedBox(height: 24),
++                  _buildStatsRow(context),
++                  const SizedBox(height: 24),
++                  _buildQuickActions(context, partnerName),
++                ],
++              ),
++            ),
++          ),
++        );
++      },
+     );
+   }
+ 
+-  Widget _buildHeader(BuildContext context) {
++  Widget _buildHeader(BuildContext context, String coupleTitle) {
+     return Row(
+       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+       children: [
+         Column(
+           crossAxisAlignment: CrossAxisAlignment.start,
+           children: [
+             Text(
+-              'Анна & Павел',
++              coupleTitle,
+               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                     color: AppColors.textPrimary,
+                     fontWeight: FontWeight.bold,
+                   ),
+             ),
+             Text(
+               'Вы вместе',
+               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                     color: AppColors.textSecondary,
+                   ),
+             ),
+           ],
+         ),
+         CircleAvatar(
+           backgroundColor: AppColors.primary.withOpacity(0.2),
+           child: const Icon(Icons.favorite, color: AppColors.primary),
+         ),
+       ],
+     );
+   }
+ 
+   Widget _buildStatsRow(BuildContext context) {
+     return Row(
+       children: [
+-        _buildStatCard(context, 'Проблемы', '2', Icons.warning_amber_rounded),
+-        const SizedBox(width: 12),
+-        _buildStatCard(context, 'Договорённости', '4', Icons.handshake_outlined),
+-        const SizedBox(width: 12),
+-        _buildStatCard(context, 'Активности', '3', Icons.local_activity_outlined),
+-        const SizedBox(width: 12),
+-        _buildStatCard(context, 'Сообщения', '5', Icons.message_outlined),
++        _buildStatCard(context, 'Проблемы', '—', Icons.warning_amber_rounded),
++        const SizedBox(width: 12),
++        _buildStatCard(context, 'Договорённости', '—', Icons.handshake_outlined),
++        const SizedBox(width: 12),
++        _buildStatCard(context, 'Активности', '—', Icons.local_activity_outlined),
++        const SizedBox(width: 12),
++        _buildStatCard(context, 'Сообщения', '—', Icons.message_outlined),
+       ],
+     );
+   }
+ 
+   Widget _buildStatCard(
+       BuildContext context, String label, String value, IconData icon) {
+     return Expanded(
+       child: Container(
+         padding: const EdgeInsets.all(12),
+         decoration: BoxDecoration(
+           color: AppColors.surface,
+           borderRadius: BorderRadius.circular(12),
+         ),
+         child: Column(
+           children: [
+             Icon(icon, color: AppColors.primary, size: 20),
+             const SizedBox(height: 4),
+             Text(value,
+                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                       color: AppColors.textPrimary,
+                       fontWeight: FontWeight.bold,
+                     )),
+             Text(label,
+                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                       color: AppColors.textSecondary,
+                     ),
+                 textAlign: TextAlign.center),
+           ],
+         ),
+       ),
+     );
+   }
+ 
+-  Widget _buildQuickActions(BuildContext context) {
++  Widget _buildQuickActions(BuildContext context, String partnerName) {
+     return Column(
+       crossAxisAlignment: CrossAxisAlignment.start,
+       children: [
+         Text(
+           'Быстрые действия',
+           style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                 color: AppColors.textPrimary,
+                 fontWeight: FontWeight.bold,
+               ),
+         ),
+         const SizedBox(height: 12),
+         _buildActionTile(
+             context, Icons.add_circle_outline, 'Добавить проблему', () {}),
+         _buildActionTile(
+-            context, Icons.message_outlined, 'Написать Анне', () {}),
++            context, Icons.message_outlined, 'Написать $partnerName', () {}),
+         _buildActionTile(
+             context, Icons.event_note_outlined, 'Запланировать активность', () {}),
+       ],
+     );
+   }
+ 
+   Widget _buildActionTile(
+       BuildContext context, IconData icon, String title, VoidCallback onTap) {
+     return ListTile(
+       onTap: onTap,
+       leading: Icon(icon, color: AppColors.primary),
+       title: Text(title,
+           style: Theme.of(context)
+               .textTheme
+               .bodyMedium
+               ?.copyWith(color: AppColors.textPrimary)),
+       trailing:
+           const Icon(Icons.chevron_right, color: AppColors.textSecondary),
+       contentPadding: EdgeInsets.zero,
+     );
+   }
+ }
++
++class _HomeData {
++  final AppUser currentUser;
++  final Couple? couple;
++  final AppUser? partner;
++
++  const _HomeData({
++    required this.currentUser,
++    required this.couple,
++    required this.partner,
++  });
++}
+diff --git a/pairapp_mobile/lib/features/profile/profile_screen.dart b/pairapp_mobile/lib/features/profile/profile_screen.dart
+--- a/pairapp_mobile/lib/features/profile/profile_screen.dart
++++ b/pairapp_mobile/lib/features/profile/profile_screen.dart
+@@ -1,9 +1,19 @@
+ import 'package:flutter/material.dart';
++import 'package:firebase_auth/firebase_auth.dart';
+ import '../../shared/models/app_user.dart';
+ import '../../shared/services/user_service.dart';
+ import '../../shared/services/couple_service.dart';
+ import '../../shared/services/auth_service.dart';
+ import '../../core/theme/app_colors.dart';
+ 
+-class ProfileScreen extends StatelessWidget {
+-  const ProfileScreen({super.key});
++class ProfileScreen extends StatefulWidget {
++  const ProfileScreen({super.key});
++
++  @override
++  State<ProfileScreen> createState() => _ProfileScreenState();
++}
++
++class _ProfileScreenState extends State<ProfileScreen> {
++  final _userService = UserService();
++  final _coupleService = CoupleService();
++  final _authService = AuthService();
++
++  Stream<_ProfileData?> _buildProfileStream() {
++    final uid = FirebaseAuth.instance.currentUser?.uid;
++    if (uid == null) return Stream.value(null);
++
++    return _userService.watchUserProfile(uid).asyncExpand((currentUser) async* {
++      if (currentUser == null) {
++        yield null;
++        return;
++      }
++      final coupleId = currentUser.currentCoupleId;
++      if (coupleId == null || coupleId.isEmpty) {
++        yield _ProfileData(currentUser: currentUser, partner: null);
++        return;
++      }
++
++      await for (final couple in _coupleService.watchCouple(coupleId)) {
++        if (couple == null) {
++          yield _ProfileData(currentUser: currentUser, partner: null);
++          continue;
++        }
++        final partnerId = couple.partnerAId == currentUser.uid
++            ? couple.partnerBId
++            : couple.partnerAId;
++
++        AppUser? partner;
++        if (partnerId != null && partnerId.isNotEmpty) {
++          partner = await _userService.getUserProfile(partnerId);
++        }
++        yield _ProfileData(currentUser: currentUser, partner: partner);
++      }
++    });
++  }
+ 
+   @override
+   Widget build(BuildContext context) {
+-    return Scaffold(
+-      backgroundColor: AppColors.background,
+-      body: SafeArea(
+-        child: SingleChildScrollView(
+-          padding: const EdgeInsets.all(20),
+-          child: Column(
+-            children: [
+-              _buildAvatar(context),
+-              const SizedBox(height: 16),
+-              _buildUserInfo(context),
+-              const SizedBox(height: 32),
+-              _buildActions(context),
+-            ],
+-          ),
+-        ),
+-      ),
++    return StreamBuilder<_ProfileData?>(
++      stream: _buildProfileStream(),
++      builder: (context, snapshot) {
++        if (snapshot.connectionState == ConnectionState.waiting) {
++          return const Scaffold(
++            backgroundColor: AppColors.background,
++            body: Center(child: CircularProgressIndicator(color: AppColors.primary)),
++          );
++        }
++
++        final data = snapshot.data;
++        final currentUser = data?.currentUser;
++        final partner = data?.partner;
++
++        final displayName = currentUser?.displayName ?? '—';
++        final email = currentUser?.email ?? '—';
++        final avatarLetter =
++            displayName.isNotEmpty ? displayName[0].toUpperCase() : '?';
++        final coupleLabel = partner != null
++            ? 'Пара с ${partner.displayName}'
++            : currentUser?.currentCoupleId != null
++                ? 'Пара создана'
++                : 'Нет пары';
++
++        return Scaffold(
++          backgroundColor: AppColors.background,
++          body: SafeArea(
++            child: SingleChildScrollView(
++              padding: const EdgeInsets.all(20),
++              child: Column(
++                children: [
++                  _buildAvatar(context, avatarLetter),
++                  const SizedBox(height: 16),
++                  _buildUserInfo(context, displayName, email, coupleLabel),
++                  const SizedBox(height: 32),
++                  _buildActions(context),
++                ],
++              ),
++            ),
++          ),
++        );
++      },
+     );
+   }
+ 
+-  Widget _buildAvatar(BuildContext context) {
++  Widget _buildAvatar(BuildContext context, String letter) {
+     return CircleAvatar(
+       radius: 48,
+       backgroundColor: AppColors.primary.withOpacity(0.2),
+       child: Text(
+-        'А',
++        letter,
+         style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+               color: AppColors.primary,
+               fontWeight: FontWeight.bold,
+             ),
+       ),
+     );
+   }
+ 
+-  Widget _buildUserInfo(BuildContext context) {
++  Widget _buildUserInfo(
++      BuildContext context, String name, String email, String coupleLabel) {
+     return Column(
+       children: [
+         Text(
+-          'Анна',
++          name,
+           style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                 color: AppColors.textPrimary,
+                 fontWeight: FontWeight.bold,
+               ),
+         ),
+         const SizedBox(height: 4),
+         Text(
+-          'pavel@example.com',
++          email,
+           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                 color: AppColors.textSecondary,
+               ),
+         ),
+         const SizedBox(height: 8),
+         Container(
+           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+           decoration: BoxDecoration(
+             color: AppColors.primary.withOpacity(0.15),
+             borderRadius: BorderRadius.circular(20),
+           ),
+           child: Text(
+-            'Пара с Анной',
++            coupleLabel,
+             style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                   color: AppColors.primary,
+                   fontWeight: FontWeight.w600,
+                 ),
+           ),
+         ),
+       ],
+     );
+   }
+ 
+   Widget _buildActions(BuildContext context) {
+     return Column(
+       children: [
+         _buildActionTile(
+           context,
+           Icons.exit_to_app_outlined,
+           'Выйти из пары',
+           AppColors.textSecondary,
+-          () {},
++          null, // не подключено к backend
+         ),
+         const SizedBox(height: 12),
+         _buildActionTile(
+           context,
+           Icons.logout,
+           'Выйти из аккаунта',
+           Colors.redAccent,
+-          () {},
++          () async {
++            await _authService.signOut();
++          },
+         ),
+       ],
+     );
+   }
+ 
+   Widget _buildActionTile(
+     BuildContext context,
+     IconData icon,
+     String title,
+     Color color,
+-    VoidCallback onTap,
++    VoidCallback? onTap,
+   ) {
+     return ListTile(
+-      onTap: onTap,
++      onTap: onTap,
+       leading: Icon(icon, color: color),
+       title: Text(
+         title,
+         style: Theme.of(context)
+             .textTheme
+             .bodyMedium
+             ?.copyWith(color: color),
+       ),
+       trailing: Icon(Icons.chevron_right, color: color.withOpacity(0.5)),
++      enabled: onTap != null,
+     );
+   }
+ }
++
++class _ProfileData {
++  final AppUser currentUser;
++  final AppUser? partner;
++
++  const _ProfileData({required this.currentUser, required this.partner});
++}

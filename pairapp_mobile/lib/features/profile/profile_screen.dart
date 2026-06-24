@@ -1,35 +1,128 @@
 import 'package:flutter/material.dart';
-import '../../theme/app_colors.dart';
-import '../../shared/widgets/app_card.dart';
 
-class ProfileScreen extends StatelessWidget {
+import '../../shared/models/app_user.dart';
+import '../../shared/services/auth_service.dart';
+import '../../shared/services/couple_service.dart';
+import '../../shared/services/user_service.dart';
+import '../../shared/widgets/app_card.dart';
+import '../../theme/app_colors.dart';
+
+class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
   @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  final _userService = UserService();
+  final _coupleService = CoupleService();
+  final _authService = AuthService();
+
+  Stream<_ProfileData?> _watchProfileData() {
+    return _userService.watchCurrentUserProfile().asyncExpand((currentUser) {
+      if (currentUser == null) {
+        return Stream<_ProfileData?>.value(null);
+      }
+
+      final coupleId = currentUser.currentCoupleId;
+      if (coupleId == null || coupleId.isEmpty) {
+        return Stream<_ProfileData?>.value(
+          _ProfileData(currentUser: currentUser, partner: null),
+        );
+      }
+
+      return _coupleService.watchCouple(coupleId).asyncMap((couple) async {
+        if (couple == null) {
+          return _ProfileData(currentUser: currentUser, partner: null);
+        }
+
+        final partnerId = couple.partnerAId == currentUser.id
+            ? couple.partnerBId
+            : couple.partnerAId;
+
+        AppUser? partner;
+        if (partnerId != null && partnerId.isNotEmpty) {
+          partner = await _userService.getUserProfile(partnerId);
+        }
+
+        return _ProfileData(currentUser: currentUser, partner: partner);
+      });
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Column(
-              children: [
-                const SizedBox(height: 16),
-                _buildHeader(context),
-                const SizedBox(height: 28),
-                _buildAvatar(context),
-                const SizedBox(height: 24),
-                _buildMenuItems(context),
-                const SizedBox(height: 20),
-                _buildLogoutButton(context),
-                const SizedBox(height: 24),
-              ],
+    return StreamBuilder<_ProfileData?>(
+      stream: _watchProfileData(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: DecoratedBox(
+              decoration: BoxDecoration(gradient: AppColors.bgGradient),
+              child: Center(
+                child: CircularProgressIndicator(color: AppColors.purple),
+              ),
+            ),
+          );
+        }
+
+        final currentUser = snapshot.data?.currentUser;
+        final partner = snapshot.data?.partner;
+
+        return Scaffold(
+          body: Container(
+            decoration: const BoxDecoration(gradient: AppColors.bgGradient),
+            child: SafeArea(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Column(
+                  children: [
+                    const SizedBox(height: 16),
+                    _buildHeader(context),
+                    const SizedBox(height: 28),
+                    _buildAvatar(context, currentUser, partner),
+                    const SizedBox(height: 24),
+                    _buildMenuItems(context, currentUser),
+                    const SizedBox(height: 20),
+                    _buildLeaveCoupleButton(context),
+                    const SizedBox(height: 12),
+                    _buildAccountLogoutButton(context),
+                    const SizedBox(height: 24),
+                  ],
+                ),
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
+  }
+
+  static String _displayName(AppUser? user, {required String fallback}) {
+    final name = user?.displayName?.trim();
+    return name == null || name.isEmpty ? fallback : name;
+  }
+
+  static String _email(AppUser? user) {
+    final email = user?.email?.trim();
+    return email == null || email.isEmpty ? 'Email не указан' : email;
+  }
+
+  static String _avatarLetter(AppUser? user) {
+    final name = _displayName(user, fallback: '?');
+    return name.substring(0, 1).toUpperCase();
+  }
+
+  String _coupleLabel(AppUser? currentUser, AppUser? partner) {
+    if (partner != null) {
+      return 'Пара с ${_displayName(partner, fallback: 'партнёром')}';
+    }
+    if (currentUser?.currentCoupleId != null &&
+        currentUser!.currentCoupleId!.isNotEmpty) {
+      return 'Пара создана';
+    }
+    return 'Нет пары';
   }
 
   Widget _buildHeader(BuildContext context) {
@@ -64,7 +157,11 @@ class ProfileScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildAvatar(BuildContext context) {
+  Widget _buildAvatar(
+    BuildContext context,
+    AppUser? currentUser,
+    AppUser? partner,
+  ) {
     return Column(
       children: [
         Stack(
@@ -84,10 +181,10 @@ class ProfileScreen extends StatelessWidget {
                   ),
                 ],
               ),
-              child: const Center(
+              child: Center(
                 child: Text(
-                  'П',
-                  style: TextStyle(
+                  _avatarLetter(currentUser),
+                  style: const TextStyle(
                     fontSize: 34,
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
@@ -110,13 +207,13 @@ class ProfileScreen extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         Text(
-          'Павел',
+          _displayName(currentUser, fallback: 'Пользователь'),
           style: Theme.of(context).textTheme.displayMedium,
         ),
         const SizedBox(height: 4),
-        const Text(
-          'pavel@example.com',
-          style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+        Text(
+          _email(currentUser),
+          style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
         ),
         const SizedBox(height: 8),
         Container(
@@ -127,14 +224,14 @@ class ProfileScreen extends StatelessWidget {
             border: Border.all(
                 color: AppColors.purple.withValues(alpha: 0.3)),
           ),
-          child: const Row(
+          child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.favorite, size: 12, color: AppColors.purple),
-              SizedBox(width: 6),
+              const Icon(Icons.favorite, size: 12, color: AppColors.purple),
+              const SizedBox(width: 6),
               Text(
-                'Пара с Анной',
-                style: TextStyle(
+                _coupleLabel(currentUser, partner),
+                style: const TextStyle(
                     fontSize: 12,
                     color: AppColors.purple,
                     fontWeight: FontWeight.w500),
@@ -146,7 +243,8 @@ class ProfileScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildMenuItems(BuildContext context) {
+  Widget _buildMenuItems(BuildContext context, AppUser? currentUser) {
+    final language = currentUser?.language == 'en' ? 'English' : 'Русский';
     final items = [
       _MenuItem(
           icon: Icons.people_outline, label: 'Настройки пары', hasArrow: true),
@@ -154,8 +252,7 @@ class ProfileScreen extends StatelessWidget {
           icon: Icons.notifications_outlined,
           label: 'Уведомления',
           hasArrow: true),
-      _MenuItem(
-          icon: Icons.language_outlined, label: 'Язык', value: 'Русский'),
+      _MenuItem(icon: Icons.language_outlined, label: 'Язык', value: language),
       _MenuItem(
           icon: Icons.help_outline, label: 'Поддержка', hasArrow: true),
       _MenuItem(
@@ -214,44 +311,17 @@ class ProfileScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildLogoutButton(BuildContext context) {
-    return GestureDetector(
-      onTap: () {
-        showDialog(
-          context: context,
-          builder: (_) => AlertDialog(
-            backgroundColor: AppColors.bgCard,
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            title: const Text('Выйти из пары?',
-                style: TextStyle(color: AppColors.textPrimary)),
-            content: const Text(
-              'Вы уверены? Это действие нельзя отменить.',
-              style: TextStyle(color: AppColors.textSecondary),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Отмена',
-                    style: TextStyle(color: AppColors.textMuted)),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Выйти',
-                    style: TextStyle(color: AppColors.roseAccent)),
-              ),
-            ],
-          ),
-        );
-      },
+  Widget _buildLeaveCoupleButton(BuildContext context) {
+    return Opacity(
+      opacity: 0.6,
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(vertical: 14),
         decoration: BoxDecoration(
-          color: AppColors.roseAccent.withValues(alpha: 0.1),
+          color: AppColors.roseAccent.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-              color: AppColors.roseAccent.withValues(alpha: 0.3)),
+              color: AppColors.roseAccent.withValues(alpha: 0.18)),
         ),
         child: const Row(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -259,7 +329,7 @@ class ProfileScreen extends StatelessWidget {
             Icon(Icons.logout, color: AppColors.roseAccent, size: 18),
             SizedBox(width: 8),
             Text(
-              'Выйти из пары',
+              'Выйти из пары — позже',
               style: TextStyle(
                 color: AppColors.roseAccent,
                 fontSize: 15,
@@ -271,6 +341,74 @@ class ProfileScreen extends StatelessWidget {
       ),
     );
   }
+
+  Widget _buildAccountLogoutButton(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            backgroundColor: AppColors.bgCard,
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: const Text('Выйти из аккаунта?',
+                style: TextStyle(color: AppColors.textPrimary)),
+            content: const Text(
+              'Вы сможете снова войти по email и паролю.',
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Отмена',
+                    style: TextStyle(color: AppColors.textMuted)),
+              ),
+              TextButton(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  await _authService.signOut();
+                },
+                child: const Text('Выйти',
+                    style: TextStyle(color: AppColors.roseAccent)),
+              ),
+            ],
+          ),
+        );
+      },
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          color: AppColors.bgCard.withValues(alpha: 0.8),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppColors.bgCardLight),
+        ),
+        child: const Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.exit_to_app_outlined,
+                color: AppColors.textSecondary, size: 18),
+            SizedBox(width: 8),
+            Text(
+              'Выйти из аккаунта',
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileData {
+  const _ProfileData({required this.currentUser, required this.partner});
+
+  final AppUser currentUser;
+  final AppUser? partner;
 }
 
 class _MenuItem {
