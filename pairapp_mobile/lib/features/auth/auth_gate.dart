@@ -3,9 +3,12 @@ import 'package:flutter/material.dart';
 
 import '../../app/app_shell.dart';
 import '../../shared/models/app_user.dart';
+import '../../shared/models/couple.dart';
 import '../../shared/services/auth_service.dart';
+import '../../shared/services/couple_service.dart';
 import '../../shared/services/user_service.dart';
 import '../../theme/app_colors.dart';
+import '../couple/couple_setup_screen.dart';
 import 'login_screen.dart';
 import 'register_screen.dart';
 
@@ -14,6 +17,7 @@ class AuthGate extends StatelessWidget {
 
   static final AuthService _authService = AuthService();
   static final UserService _userService = UserService();
+  static final CoupleService _coupleService = CoupleService();
 
   @override
   Widget build(BuildContext context) {
@@ -52,13 +56,45 @@ class AuthGate extends StatelessWidget {
               return const _CompleteProfileScreen();
             }
 
-            // Profile complete, no couple yet
+            // Profile complete, no couple yet → setup flow (create or join)
             if (!appUser.hasCouple) {
-              return const _WaitingForCoupleScreen();
+              return const CoupleSetupScreen();
             }
 
-            // All good — show the main shell
-            return const AppShell();
+            // Has a coupleId — watch the couple document
+            return StreamBuilder<Couple?>(
+              stream: _coupleService.watchCouple(appUser.currentCoupleId!),
+              builder: (context, coupleSnap) {
+                if (coupleSnap.connectionState == ConnectionState.waiting) {
+                  return const _LoadingScreen();
+                }
+
+                final couple = coupleSnap.data;
+
+                // Document missing
+                if (couple == null) {
+                  return const _CoupleNotFoundScreen();
+                }
+
+                // Couple exists but not active (e.g. banned / deleted)
+                if (!couple.isActive) {
+                  return const _CoupleNotActiveScreen();
+                }
+
+                // Couple is active but partnerB hasn't joined yet →
+                // show the waiting screen with the existing invite code.
+                // This handles the "app restart after createCouple" case.
+                if (!couple.hasBothPartners) {
+                  return CoupleSetupScreen(
+                    existingCoupleId: couple.id,
+                    existingInviteCode: couple.inviteCode,
+                  );
+                }
+
+                // Both partners present and couple active → main shell
+                return const AppShell();
+              },
+            );
           },
         );
       },
@@ -179,8 +215,8 @@ class _CompleteProfileScreen extends StatelessWidget {
   }
 }
 
-class _WaitingForCoupleScreen extends StatelessWidget {
-  const _WaitingForCoupleScreen();
+class _CoupleNotFoundScreen extends StatelessWidget {
+  const _CoupleNotFoundScreen();
 
   @override
   Widget build(BuildContext context) {
@@ -210,20 +246,78 @@ class _WaitingForCoupleScreen extends StatelessWidget {
                       ],
                     ),
                     child: const Icon(
-                      Icons.favorite_border_rounded,
+                      Icons.search_off_rounded,
                       color: Colors.white,
                       size: 34,
                     ),
                   ),
                   const SizedBox(height: 24),
                   Text(
-                    'Почти готово!',
+                    'Пара не найдена',
                     style: Theme.of(context).textTheme.displayMedium,
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    'Создание пары будет следующим шагом.',
+                    'Документ пары не существует. Обратись в поддержку.',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CoupleNotActiveScreen extends StatelessWidget {
+  const _CoupleNotActiveScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.bgDeep,
+      body: Container(
+        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
+        child: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      gradient: AppColors.purpleGradient,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.purple.withValues(alpha: 0.4),
+                          blurRadius: 24,
+                          offset: const Offset(0, 6),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.link_off_rounded,
+                      color: Colors.white,
+                      size: 34,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    'Пара не активна',
+                    style: Theme.of(context).textTheme.displayMedium,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    'Обратись в поддержку или дождись активации пары.',
                     style: Theme.of(context).textTheme.bodyMedium,
                     textAlign: TextAlign.center,
                   ),
