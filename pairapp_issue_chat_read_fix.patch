@@ -1,0 +1,53 @@
+--- a/pairapp_mobile/lib/shared/services/issue_service.dart
++++ b/pairapp_mobile/lib/shared/services/issue_service.dart
+@@ -89,22 +89,35 @@
+       return Stream.value(const <IssueMessage>[]);
+     }
+ 
+-    return _issueMessagesRef
+-        .where('issueId', isEqualTo: trimmedIssueId)
+-        .snapshots()
+-        .map((snapshot) {
+-      final messages = snapshot.docs
+-          .map(IssueMessage.fromFirestore)
+-          .where((message) => !message.isDeleted)
+-          .toList();
+-
+-      messages.sort((a, b) {
+-        final aDate = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+-        final bDate = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+-        return aDate.compareTo(bDate);
+-      });
++    return _issuesRef.doc(trimmedIssueId).snapshots().asyncExpand((issueDoc) {
++      if (!issueDoc.exists) {
++        return Stream.value(const <IssueMessage>[]);
++      }
++
++      final issue = Issue.fromFirestore(issueDoc);
++      final coupleId = issue.coupleId.trim();
++      if (coupleId.isEmpty) {
++        return Stream.value(const <IssueMessage>[]);
++      }
++
++      return _issueMessagesRef
++          .where('coupleId', isEqualTo: coupleId)
++          .where('issueId', isEqualTo: trimmedIssueId)
++          .snapshots()
++          .map((snapshot) {
++        final messages = snapshot.docs
++            .map(IssueMessage.fromFirestore)
++            .where((message) => !message.isDeleted)
++            .toList();
+ 
+-      return messages;
++        messages.sort((a, b) {
++          final aDate = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
++          final bDate = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
++          return aDate.compareTo(bDate);
++        });
++
++        return messages;
++      });
+     });
+   }
+ 

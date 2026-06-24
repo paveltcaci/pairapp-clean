@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/issue.dart';
+import '../models/issue_message.dart';
 import 'functions_service.dart';
 
 class IssueService {
@@ -15,6 +16,9 @@ class IssueService {
 
   CollectionReference<Map<String, dynamic>> get _issuesRef =>
       _firestore.collection('issues');
+
+  CollectionReference<Map<String, dynamic>> get _issueMessagesRef =>
+      _firestore.collection('issue_messages');
 
   Stream<List<Issue>> watchCoupleIssues(String coupleId) {
     final trimmedCoupleId = coupleId.trim();
@@ -76,6 +80,81 @@ class IssueService {
     } catch (e) {
       if (e is IssueServiceException) rethrow;
       throw IssueServiceException('Failed to create issue.', cause: e);
+    }
+  }
+
+  Stream<List<IssueMessage>> watchIssueMessages(String issueId) {
+    final trimmedIssueId = issueId.trim();
+    if (trimmedIssueId.isEmpty) {
+      return Stream.value(const <IssueMessage>[]);
+    }
+
+    return _issuesRef.doc(trimmedIssueId).snapshots().asyncExpand((issueDoc) {
+      if (!issueDoc.exists) {
+        return Stream.value(const <IssueMessage>[]);
+      }
+
+      final issue = Issue.fromFirestore(issueDoc);
+      final coupleId = issue.coupleId.trim();
+      if (coupleId.isEmpty) {
+        return Stream.value(const <IssueMessage>[]);
+      }
+
+      return _issueMessagesRef
+          .where('coupleId', isEqualTo: coupleId)
+          .where('issueId', isEqualTo: trimmedIssueId)
+          .snapshots()
+          .map((snapshot) {
+        final messages = snapshot.docs
+            .map(IssueMessage.fromFirestore)
+            .where((message) => !message.isDeleted)
+            .toList();
+
+        messages.sort((a, b) {
+          final aDate = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+          final bDate = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+          return aDate.compareTo(bDate);
+        });
+
+        return messages;
+      });
+    });
+  }
+
+  Future<String> createIssueMessage({
+    required String issueId,
+    required String text,
+  }) async {
+    final trimmedIssueId = issueId.trim();
+    final trimmedText = text.trim();
+
+    if (trimmedIssueId.isEmpty) {
+      throw const IssueServiceException('issueId is required.');
+    }
+    if (trimmedText.isEmpty) {
+      throw const IssueServiceException('Message text cannot be empty.');
+    }
+
+    try {
+      final data = await _functionsService.call('createIssueMessage', {
+        'issueId': trimmedIssueId,
+        'text': trimmedText,
+        'type': IssueMessageType.comment.backendValue,
+      });
+
+      final messageId = data['messageId'] ?? data['id'];
+      if (messageId is String && messageId.isNotEmpty) {
+        return messageId;
+      }
+
+      throw IssueServiceException(
+        'Backend returned invalid createIssueMessage response: $data',
+      );
+    } on FunctionsCallException catch (e) {
+      throw IssueServiceException(e.message, code: e.code, cause: e);
+    } catch (e) {
+      if (e is IssueServiceException) rethrow;
+      throw IssueServiceException('Failed to send message.', cause: e);
     }
   }
 
