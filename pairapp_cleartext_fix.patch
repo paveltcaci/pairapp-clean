@@ -1,0 +1,43 @@
+diff --git a/pairapp_mobile/android/app/src/debug/AndroidManifest.xml b/pairapp_mobile/android/app/src/debug/AndroidManifest.xml
+index 399f698..d758efa 100644
+--- a/pairapp_mobile/android/app/src/debug/AndroidManifest.xml
++++ b/pairapp_mobile/android/app/src/debug/AndroidManifest.xml
+@@ -1,7 +1,13 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+-    <!-- The INTERNET permission is required for development. Specifically,
+-         the Flutter tool needs it to communicate with the running application
+-         to allow setting breakpoints, to provide hot reload, etc.
+-    -->
++    <!-- Required for Flutter tooling (hot reload, breakpoints, etc.) -->
+     <uses-permission android:name="android.permission.INTERNET"/>
++
++    <!--
++      Allow cleartext HTTP traffic to Firebase Emulator Suite (10.0.2.2)
++      in debug builds only. This attribute is NOT set in the main manifest
++      so it has no effect on production APKs.
++    -->
++    <application
++        android:networkSecurityConfig="@xml/network_security_config"
++        android:usesCleartextTraffic="true" />
+ </manifest>
+diff --git a/pairapp_mobile/android/app/src/debug/res/xml/network_security_config.xml b/pairapp_mobile/android/app/src/debug/res/xml/network_security_config.xml
+new file mode 100644
+index 0000000..ee44583
+--- /dev/null
++++ b/pairapp_mobile/android/app/src/debug/res/xml/network_security_config.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++  Debug-only network security config.
++  Allows cleartext HTTP to Firebase Emulator Suite hosts:
++    10.0.2.2   — Android emulator loopback to host machine
++    127.0.0.1  — physical device / macOS simulator (if ever needed)
++  Production builds do NOT include this file.
++-->
++<network-security-config>
++    <domain-config cleartextTrafficPermitted="true">
++        <domain includeSubdomains="false">10.0.2.2</domain>
++        <domain includeSubdomains="false">127.0.0.1</domain>
++        <domain includeSubdomains="false">localhost</domain>
++    </domain-config>
++</network-security-config>
