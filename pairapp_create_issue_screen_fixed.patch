@@ -1,0 +1,627 @@
+diff --git a/pairapp_mobile/lib/features/create_issue/create_issue_screen.dart b/pairapp_mobile/lib/features/create_issue/create_issue_screen.dart
+index 54af8e9..6ce1284 100644
+--- a/pairapp_mobile/lib/features/create_issue/create_issue_screen.dart
++++ b/pairapp_mobile/lib/features/create_issue/create_issue_screen.dart
+@@ -1,239 +1,383 @@
+-import 'package:flutter/material.dart';
+-import '../../theme/app_colors.dart';
+-import '../../shared/widgets/gradient_button.dart';
+-
+-class CreateIssueScreen extends StatefulWidget {
+-  const CreateIssueScreen({super.key});
+-
+-  @override
+-  State<CreateIssueScreen> createState() => _CreateIssueScreenState();
+-}
+-
+-class _CreateIssueScreenState extends State<CreateIssueScreen> {
+-  int _importance = 3;
+-  String? _selectedCategory;
+-  String? _selectedFeeling;
+-
+-  final _categories = ['Время', 'Финансы', 'Быт', 'Общение', 'Интимность', 'Семья'];
+-  final _feelings = ['Грустно 😢', 'Тревожно 😰', 'Обидно 😔', 'Злюсь 😤', 'Растерян 😕'];
+-
+-  @override
+-  Widget build(BuildContext context) {
+-    return Scaffold(
+-      body: Container(
+-        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
+-        child: SafeArea(
+-          child: Column(
+-            children: [
+-              _buildAppBar(context),
+-              Expanded(
+-                child: SingleChildScrollView(
+-                  padding: const EdgeInsets.symmetric(horizontal: 20),
+-                  child: Column(
+-                    crossAxisAlignment: CrossAxisAlignment.start,
+-                    children: [
+-                      const SizedBox(height: 8),
+-                      _buildField(
+-                        label: 'Что вас беспокоит?',
+-                        hint: 'Опишите проблему кратко...',
+-                        maxLines: 1,
+-                      ),
+-                      const SizedBox(height: 20),
+-                      _buildField(
+-                        label: 'Описание',
+-                        hint: 'Расскажите подробнее — что происходит, когда это началось...',
+-                        maxLines: 4,
+-                      ),
+-                      const SizedBox(height: 20),
+-                      _buildLabel('Категория'),
+-                      const SizedBox(height: 10),
+-                      _buildChips(_categories, _selectedCategory,
+-                          (v) => setState(() => _selectedCategory = v)),
+-                      const SizedBox(height: 20),
+-                      _buildLabel('Как вы себя чувствуете?'),
+-                      const SizedBox(height: 10),
+-                      _buildChips(_feelings, _selectedFeeling,
+-                          (v) => setState(() => _selectedFeeling = v)),
+-                      const SizedBox(height: 20),
+-                      _buildLabel('Важность'),
+-                      const SizedBox(height: 12),
+-                      _buildImportanceSlider(),
+-                      const SizedBox(height: 32),
+-                      GradientButton(
+-                        label: 'Создать проблему',
+-                        icon: Icons.add_circle_outline,
+-                        width: double.infinity,
+-                        onTap: () => Navigator.pop(context),
+-                      ),
+-                      const SizedBox(height: 24),
+-                    ],
+-                  ),
+-                ),
+-              ),
+-            ],
+-          ),
+-        ),
+-      ),
+-    );
+-  }
+-
+-  Widget _buildAppBar(BuildContext context) {
+-    return Padding(
+-      padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
+-      child: Row(
+-        children: [
+-          IconButton(
+-            onPressed: () => Navigator.pop(context),
+-            icon: const Icon(Icons.close,
+-                color: AppColors.textPrimary),
+-          ),
+-          Expanded(
+-            child: Text(
+-              'Новая проблема',
+-              style: Theme.of(context).textTheme.titleLarge,
+-              textAlign: TextAlign.center,
+-            ),
+-          ),
+-          const SizedBox(width: 48),
+-        ],
+-      ),
+-    );
+-  }
+-
+-  Widget _buildLabel(String text) {
+-    return Text(
+-      text,
+-      style: const TextStyle(
+-        fontSize: 14,
+-        fontWeight: FontWeight.w600,
+-        color: AppColors.textPrimary,
+-      ),
+-    );
+-  }
+-
+-  Widget _buildField({
+-    required String label,
+-    required String hint,
+-    int maxLines = 1,
+-  }) {
+-    return Column(
+-      crossAxisAlignment: CrossAxisAlignment.start,
+-      children: [
+-        _buildLabel(label),
+-        const SizedBox(height: 8),
+-        TextField(
+-          maxLines: maxLines,
+-          style: const TextStyle(color: AppColors.textPrimary),
+-          decoration: InputDecoration(hintText: hint),
+-        ),
+-      ],
+-    );
+-  }
+-
+-  Widget _buildChips(
+-    List<String> items,
+-    String? selected,
+-    ValueChanged<String> onSelect,
+-  ) {
+-    return Wrap(
+-      spacing: 8,
+-      runSpacing: 8,
+-      children: items.map((item) {
+-        final isSelected = item == selected;
+-        return GestureDetector(
+-          onTap: () => onSelect(item),
+-          child: AnimatedContainer(
+-            duration: const Duration(milliseconds: 200),
+-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+-            decoration: BoxDecoration(
+-              gradient: isSelected ? AppColors.purpleGradient : null,
+-              color: isSelected ? null : AppColors.bgCard,
+-              borderRadius: BorderRadius.circular(20),
+-              border: isSelected
+-                  ? null
+-                  : Border.all(color: AppColors.bgCardLight),
+-              boxShadow: isSelected
+-                  ? [
+-                      BoxShadow(
+-                        color: AppColors.purple.withValues(alpha: 0.3),
+-                        blurRadius: 8,
+-                        offset: const Offset(0, 2),
+-                      ),
+-                    ]
+-                  : null,
+-            ),
+-            child: Text(
+-              item,
+-              style: TextStyle(
+-                fontSize: 13,
+-                color: isSelected ? Colors.white : AppColors.textSecondary,
+-                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+-              ),
+-            ),
+-          ),
+-        );
+-      }).toList(),
+-    );
+-  }
+-
+-  Widget _buildImportanceSlider() {
+-    return Column(
+-      children: [
+-        Row(
+-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+-          children: List.generate(5, (i) {
+-            final val = i + 1;
+-            final selected = val <= _importance;
+-            return GestureDetector(
+-              onTap: () => setState(() => _importance = val),
+-              child: AnimatedContainer(
+-                duration: const Duration(milliseconds: 150),
+-                width: 52,
+-                height: 52,
+-                decoration: BoxDecoration(
+-                  gradient: selected ? AppColors.purpleGradient : null,
+-                  color: selected ? null : AppColors.bgCard,
+-                  borderRadius: BorderRadius.circular(14),
+-                  border: Border.all(
+-                    color: selected
+-                        ? Colors.transparent
+-                        : AppColors.bgCardLight,
+-                  ),
+-                  boxShadow: selected
+-                      ? [
+-                          BoxShadow(
+-                            color: AppColors.purple.withValues(alpha: 0.4),
+-                            blurRadius: 10,
+-                            offset: const Offset(0, 2),
+-                          ),
+-                        ]
+-                      : null,
+-                ),
+-                child: Center(
+-                  child: Text(
+-                    '$val',
+-                    style: TextStyle(
+-                      fontSize: 18,
+-                      fontWeight: FontWeight.bold,
+-                      color: selected ? Colors.white : AppColors.textMuted,
+-                    ),
+-                  ),
+-                ),
+-              ),
+-            );
+-          }),
+-        ),
+-        const SizedBox(height: 8),
+-        const Row(
+-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+-          children: [
+-            Text('Маловажно',
+-                style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
+-            Text('Очень важно',
+-                style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
+-          ],
+-        ),
+-      ],
+-    );
+-  }
+-}
++import 'package:flutter/material.dart';
++
++import '../../shared/services/issue_service.dart';
++import '../../shared/services/user_service.dart';
++import '../../shared/widgets/gradient_button.dart';
++import '../../theme/app_colors.dart';
++
++class CreateIssueScreen extends StatefulWidget {
++  const CreateIssueScreen({super.key});
++
++  @override
++  State<CreateIssueScreen> createState() => _CreateIssueScreenState();
++}
++
++class _CreateIssueScreenState extends State<CreateIssueScreen> {
++  final _titleController = TextEditingController();
++  final _descriptionController = TextEditingController();
++  final _desiredOutcomeController = TextEditingController();
++
++  final _issueService = IssueService();
++  final _userService = UserService();
++
++  int _importance = 3;
++  _IssueOption? _selectedCategory;
++  _IssueOption? _selectedFeeling;
++  bool _isLoading = false;
++
++  static const _categories = [
++    _IssueOption('time_together', 'Время вместе'),
++    _IssueOption('communication', 'Общение'),
++    _IssueOption('household', 'Быт'),
++    _IssueOption('money', 'Финансы'),
++    _IssueOption('jealousy', 'Ревность'),
++    _IssueOption('intimacy', 'Интимность'),
++    _IssueOption('support', 'Поддержка'),
++    _IssueOption('family', 'Семья'),
++    _IssueOption('future_plans', 'Планы на будущее'),
++    _IssueOption('other', 'Другое'),
++  ];
++
++  static const _feelings = [
++    _IssueOption('sadness', 'Грусть 😢'),
++    _IssueOption('loneliness', 'Одиночество 🫥'),
++    _IssueOption('anger', 'Злость 😤'),
++    _IssueOption('anxiety', 'Тревога 😰'),
++    _IssueOption('tiredness', 'Усталость 😔'),
++    _IssueOption('misunderstanding', 'Недопонимание 😕'),
++    _IssueOption('other', 'Другое'),
++  ];
++
++  @override
++  void dispose() {
++    _titleController.dispose();
++    _descriptionController.dispose();
++    _desiredOutcomeController.dispose();
++    super.dispose();
++  }
++
++  Future<void> _submit() async {
++    if (_isLoading) return;
++
++    final title = _titleController.text.trim();
++    final description = _descriptionController.text.trim();
++    final desiredOutcome = _desiredOutcomeController.text.trim();
++
++    if (title.isEmpty) {
++      _showError('Укажите, что вас беспокоит');
++      return;
++    }
++    if (description.isEmpty) {
++      _showError('Добавьте описание');
++      return;
++    }
++    if (_selectedCategory == null) {
++      _showError('Выберите категорию');
++      return;
++    }
++    if (_selectedFeeling == null) {
++      _showError('Выберите, как вы себя чувствуете');
++      return;
++    }
++    if (desiredOutcome.isEmpty) {
++      _showError('Опишите желаемый результат');
++      return;
++    }
++
++    setState(() => _isLoading = true);
++
++    try {
++      final user = await _userService.getCurrentUserProfile();
++      if (!mounted) return;
++
++      if (user == null || !user.hasCouple) {
++        _showError('Сначала нужно создать пару');
++        return;
++      }
++
++      await _issueService.createIssue(
++        title: title,
++        description: description,
++        feelings: [_selectedFeeling!.value],
++        importanceLevel: _importance,
++        desiredOutcome: desiredOutcome,
++        category: _selectedCategory!.value,
++      );
++
++      if (!mounted) return;
++
++      ScaffoldMessenger.of(context).showSnackBar(
++        const SnackBar(
++          content: Text('Проблема создана'),
++          backgroundColor: AppColors.purple,
++          behavior: SnackBarBehavior.floating,
++        ),
++      );
++      Navigator.pop(context);
++    } on IssueServiceException catch (e) {
++      if (!mounted) return;
++      _showError(e.message);
++    } catch (_) {
++      if (!mounted) return;
++      _showError('Что-то пошло не так. Попробуйте ещё раз.');
++    } finally {
++      if (mounted) setState(() => _isLoading = false);
++    }
++  }
++
++  void _showError(String message) {
++    ScaffoldMessenger.of(context).showSnackBar(
++      SnackBar(
++        content: Text(message),
++        backgroundColor: Colors.redAccent,
++        behavior: SnackBarBehavior.floating,
++      ),
++    );
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      body: Container(
++        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
++        child: SafeArea(
++          child: Column(
++            children: [
++              _buildAppBar(context),
++              Expanded(
++                child: SingleChildScrollView(
++                  padding: const EdgeInsets.symmetric(horizontal: 20),
++                  child: Column(
++                    crossAxisAlignment: CrossAxisAlignment.start,
++                    children: [
++                      const SizedBox(height: 8),
++                      _buildField(
++                        label: 'Что вас беспокоит?',
++                        hint: 'Опишите проблему кратко...',
++                        controller: _titleController,
++                        maxLines: 1,
++                      ),
++                      const SizedBox(height: 20),
++                      _buildField(
++                        label: 'Описание',
++                        hint: 'Расскажите подробнее — что происходит, когда это началось...',
++                        controller: _descriptionController,
++                        maxLines: 4,
++                      ),
++                      const SizedBox(height: 20),
++                      _buildLabel('Категория'),
++                      const SizedBox(height: 10),
++                      _buildChips(
++                        _categories,
++                        _selectedCategory,
++                        (v) => setState(() => _selectedCategory = v),
++                      ),
++                      const SizedBox(height: 20),
++                      _buildLabel('Как вы себя чувствуете?'),
++                      const SizedBox(height: 10),
++                      _buildChips(
++                        _feelings,
++                        _selectedFeeling,
++                        (v) => setState(() => _selectedFeeling = v),
++                      ),
++                      const SizedBox(height: 20),
++                      _buildLabel('Важность'),
++                      const SizedBox(height: 12),
++                      _buildImportanceSlider(),
++                      const SizedBox(height: 20),
++                      _buildField(
++                        label: 'Желаемый результат',
++                        hint: 'Что вы хотите, чтобы изменилось?',
++                        controller: _desiredOutcomeController,
++                        maxLines: 3,
++                      ),
++                      const SizedBox(height: 32),
++                      GradientButton(
++                        label: _isLoading ? 'Создаём...' : 'Создать проблему',
++                        icon: _isLoading
++                            ? Icons.hourglass_top_rounded
++                            : Icons.add_circle_outline,
++                        width: double.infinity,
++                        onTap: _isLoading ? () {} : _submit,
++                      ),
++                      const SizedBox(height: 24),
++                    ],
++                  ),
++                ),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildAppBar(BuildContext context) {
++    return Padding(
++      padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
++      child: Row(
++        children: [
++          IconButton(
++            onPressed: _isLoading ? null : () => Navigator.pop(context),
++            icon: const Icon(Icons.close, color: AppColors.textPrimary),
++          ),
++          Expanded(
++            child: Text(
++              'Новая проблема',
++              style: Theme.of(context).textTheme.titleLarge,
++              textAlign: TextAlign.center,
++            ),
++          ),
++          const SizedBox(width: 48),
++        ],
++      ),
++    );
++  }
++
++  Widget _buildLabel(String text) {
++    return Text(
++      text,
++      style: const TextStyle(
++        fontSize: 14,
++        fontWeight: FontWeight.w600,
++        color: AppColors.textPrimary,
++      ),
++    );
++  }
++
++  Widget _buildField({
++    required String label,
++    required String hint,
++    required TextEditingController controller,
++    int maxLines = 1,
++  }) {
++    return Column(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        _buildLabel(label),
++        const SizedBox(height: 8),
++        TextField(
++          controller: controller,
++          enabled: !_isLoading,
++          maxLines: maxLines,
++          style: const TextStyle(color: AppColors.textPrimary),
++          decoration: InputDecoration(hintText: hint),
++        ),
++      ],
++    );
++  }
++
++  Widget _buildChips(
++    List<_IssueOption> items,
++    _IssueOption? selected,
++    ValueChanged<_IssueOption> onSelect,
++  ) {
++    return Wrap(
++      spacing: 8,
++      runSpacing: 8,
++      children: items.map((item) {
++        final isSelected = item.value == selected?.value;
++        return GestureDetector(
++          onTap: _isLoading ? null : () => onSelect(item),
++          child: AnimatedContainer(
++            duration: const Duration(milliseconds: 200),
++            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
++            decoration: BoxDecoration(
++              gradient: isSelected ? AppColors.purpleGradient : null,
++              color: isSelected ? null : AppColors.bgCard,
++              borderRadius: BorderRadius.circular(20),
++              border: isSelected
++                  ? null
++                  : Border.all(color: AppColors.bgCardLight),
++              boxShadow: isSelected
++                  ? [
++                      BoxShadow(
++                        color: AppColors.purple.withValues(alpha: 0.3),
++                        blurRadius: 8,
++                        offset: const Offset(0, 2),
++                      ),
++                    ]
++                  : null,
++            ),
++            child: Text(
++              item.label,
++              style: TextStyle(
++                fontSize: 13,
++                color: isSelected ? Colors.white : AppColors.textSecondary,
++                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
++              ),
++            ),
++          ),
++        );
++      }).toList(),
++    );
++  }
++
++  Widget _buildImportanceSlider() {
++    return Column(
++      children: [
++        Row(
++          mainAxisAlignment: MainAxisAlignment.spaceBetween,
++          children: List.generate(5, (i) {
++            final val = i + 1;
++            final selected = val <= _importance;
++            return GestureDetector(
++              onTap: _isLoading ? null : () => setState(() => _importance = val),
++              child: AnimatedContainer(
++                duration: const Duration(milliseconds: 150),
++                width: 52,
++                height: 52,
++                decoration: BoxDecoration(
++                  gradient: selected ? AppColors.purpleGradient : null,
++                  color: selected ? null : AppColors.bgCard,
++                  borderRadius: BorderRadius.circular(14),
++                  border: Border.all(
++                    color: selected
++                        ? Colors.transparent
++                        : AppColors.bgCardLight,
++                  ),
++                  boxShadow: selected
++                      ? [
++                          BoxShadow(
++                            color: AppColors.purple.withValues(alpha: 0.4),
++                            blurRadius: 10,
++                            offset: const Offset(0, 2),
++                          ),
++                        ]
++                      : null,
++                ),
++                child: Center(
++                  child: Text(
++                    '$val',
++                    style: TextStyle(
++                      fontSize: 18,
++                      fontWeight: FontWeight.bold,
++                      color: selected ? Colors.white : AppColors.textMuted,
++                    ),
++                  ),
++                ),
++              ),
++            );
++          }),
++        ),
++        const SizedBox(height: 8),
++        const Row(
++          mainAxisAlignment: MainAxisAlignment.spaceBetween,
++          children: [
++            Text('Маловажно',
++                style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
++            Text('Очень важно',
++                style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
++          ],
++        ),
++      ],
++    );
++  }
++}
++
++class _IssueOption {
++  const _IssueOption(this.value, this.label);
++
++  final String value;
++  final String label;
++}

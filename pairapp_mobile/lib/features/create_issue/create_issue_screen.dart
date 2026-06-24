@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
-import '../../theme/app_colors.dart';
+
+import '../../shared/services/issue_service.dart';
+import '../../shared/services/user_service.dart';
 import '../../shared/widgets/gradient_button.dart';
+import '../../theme/app_colors.dart';
 
 class CreateIssueScreen extends StatefulWidget {
   const CreateIssueScreen({super.key});
@@ -10,12 +13,127 @@ class CreateIssueScreen extends StatefulWidget {
 }
 
 class _CreateIssueScreenState extends State<CreateIssueScreen> {
-  int _importance = 3;
-  String? _selectedCategory;
-  String? _selectedFeeling;
+  final _titleController = TextEditingController();
+  final _descriptionController = TextEditingController();
+  final _desiredOutcomeController = TextEditingController();
 
-  final _categories = ['Время', 'Финансы', 'Быт', 'Общение', 'Интимность', 'Семья'];
-  final _feelings = ['Грустно 😢', 'Тревожно 😰', 'Обидно 😔', 'Злюсь 😤', 'Растерян 😕'];
+  final _issueService = IssueService();
+  final _userService = UserService();
+
+  int _importance = 3;
+  _IssueOption? _selectedCategory;
+  _IssueOption? _selectedFeeling;
+  bool _isLoading = false;
+
+  static const _categories = [
+    _IssueOption('time_together', 'Время вместе'),
+    _IssueOption('communication', 'Общение'),
+    _IssueOption('household', 'Быт'),
+    _IssueOption('money', 'Финансы'),
+    _IssueOption('jealousy', 'Ревность'),
+    _IssueOption('intimacy', 'Интимность'),
+    _IssueOption('support', 'Поддержка'),
+    _IssueOption('family', 'Семья'),
+    _IssueOption('future_plans', 'Планы на будущее'),
+    _IssueOption('other', 'Другое'),
+  ];
+
+  static const _feelings = [
+    _IssueOption('sadness', 'Грусть 😢'),
+    _IssueOption('loneliness', 'Одиночество 🫥'),
+    _IssueOption('anger', 'Злость 😤'),
+    _IssueOption('anxiety', 'Тревога 😰'),
+    _IssueOption('tiredness', 'Усталость 😔'),
+    _IssueOption('misunderstanding', 'Недопонимание 😕'),
+    _IssueOption('other', 'Другое'),
+  ];
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _descriptionController.dispose();
+    _desiredOutcomeController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_isLoading) return;
+
+    final title = _titleController.text.trim();
+    final description = _descriptionController.text.trim();
+    final desiredOutcome = _desiredOutcomeController.text.trim();
+
+    if (title.isEmpty) {
+      _showError('Укажите, что вас беспокоит');
+      return;
+    }
+    if (description.isEmpty) {
+      _showError('Добавьте описание');
+      return;
+    }
+    if (_selectedCategory == null) {
+      _showError('Выберите категорию');
+      return;
+    }
+    if (_selectedFeeling == null) {
+      _showError('Выберите, как вы себя чувствуете');
+      return;
+    }
+    if (desiredOutcome.isEmpty) {
+      _showError('Опишите желаемый результат');
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      final user = await _userService.getCurrentUserProfile();
+      if (!mounted) return;
+
+      if (user == null || !user.hasCouple) {
+        _showError('Сначала нужно создать пару');
+        return;
+      }
+
+      await _issueService.createIssue(
+        title: title,
+        description: description,
+        feelings: [_selectedFeeling!.value],
+        importanceLevel: _importance,
+        desiredOutcome: desiredOutcome,
+        category: _selectedCategory!.value,
+      );
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Проблема создана'),
+          backgroundColor: AppColors.purple,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      Navigator.pop(context);
+    } on IssueServiceException catch (e) {
+      if (!mounted) return;
+      _showError(e.message);
+    } catch (_) {
+      if (!mounted) return;
+      _showError('Что-то пошло не так. Попробуйте ещё раз.');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.redAccent,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -36,34 +154,51 @@ class _CreateIssueScreenState extends State<CreateIssueScreen> {
                       _buildField(
                         label: 'Что вас беспокоит?',
                         hint: 'Опишите проблему кратко...',
+                        controller: _titleController,
                         maxLines: 1,
                       ),
                       const SizedBox(height: 20),
                       _buildField(
                         label: 'Описание',
                         hint: 'Расскажите подробнее — что происходит, когда это началось...',
+                        controller: _descriptionController,
                         maxLines: 4,
                       ),
                       const SizedBox(height: 20),
                       _buildLabel('Категория'),
                       const SizedBox(height: 10),
-                      _buildChips(_categories, _selectedCategory,
-                          (v) => setState(() => _selectedCategory = v)),
+                      _buildChips(
+                        _categories,
+                        _selectedCategory,
+                        (v) => setState(() => _selectedCategory = v),
+                      ),
                       const SizedBox(height: 20),
                       _buildLabel('Как вы себя чувствуете?'),
                       const SizedBox(height: 10),
-                      _buildChips(_feelings, _selectedFeeling,
-                          (v) => setState(() => _selectedFeeling = v)),
+                      _buildChips(
+                        _feelings,
+                        _selectedFeeling,
+                        (v) => setState(() => _selectedFeeling = v),
+                      ),
                       const SizedBox(height: 20),
                       _buildLabel('Важность'),
                       const SizedBox(height: 12),
                       _buildImportanceSlider(),
+                      const SizedBox(height: 20),
+                      _buildField(
+                        label: 'Желаемый результат',
+                        hint: 'Что вы хотите, чтобы изменилось?',
+                        controller: _desiredOutcomeController,
+                        maxLines: 3,
+                      ),
                       const SizedBox(height: 32),
                       GradientButton(
-                        label: 'Создать проблему',
-                        icon: Icons.add_circle_outline,
+                        label: _isLoading ? 'Создаём...' : 'Создать проблему',
+                        icon: _isLoading
+                            ? Icons.hourglass_top_rounded
+                            : Icons.add_circle_outline,
                         width: double.infinity,
-                        onTap: () => Navigator.pop(context),
+                        onTap: _isLoading ? () {} : _submit,
                       ),
                       const SizedBox(height: 24),
                     ],
@@ -83,9 +218,8 @@ class _CreateIssueScreenState extends State<CreateIssueScreen> {
       child: Row(
         children: [
           IconButton(
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.close,
-                color: AppColors.textPrimary),
+            onPressed: _isLoading ? null : () => Navigator.pop(context),
+            icon: const Icon(Icons.close, color: AppColors.textPrimary),
           ),
           Expanded(
             child: Text(
@@ -114,6 +248,7 @@ class _CreateIssueScreenState extends State<CreateIssueScreen> {
   Widget _buildField({
     required String label,
     required String hint,
+    required TextEditingController controller,
     int maxLines = 1,
   }) {
     return Column(
@@ -122,6 +257,8 @@ class _CreateIssueScreenState extends State<CreateIssueScreen> {
         _buildLabel(label),
         const SizedBox(height: 8),
         TextField(
+          controller: controller,
+          enabled: !_isLoading,
           maxLines: maxLines,
           style: const TextStyle(color: AppColors.textPrimary),
           decoration: InputDecoration(hintText: hint),
@@ -131,17 +268,17 @@ class _CreateIssueScreenState extends State<CreateIssueScreen> {
   }
 
   Widget _buildChips(
-    List<String> items,
-    String? selected,
-    ValueChanged<String> onSelect,
+    List<_IssueOption> items,
+    _IssueOption? selected,
+    ValueChanged<_IssueOption> onSelect,
   ) {
     return Wrap(
       spacing: 8,
       runSpacing: 8,
       children: items.map((item) {
-        final isSelected = item == selected;
+        final isSelected = item.value == selected?.value;
         return GestureDetector(
-          onTap: () => onSelect(item),
+          onTap: _isLoading ? null : () => onSelect(item),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 200),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
@@ -163,7 +300,7 @@ class _CreateIssueScreenState extends State<CreateIssueScreen> {
                   : null,
             ),
             child: Text(
-              item,
+              item.label,
               style: TextStyle(
                 fontSize: 13,
                 color: isSelected ? Colors.white : AppColors.textSecondary,
@@ -185,7 +322,7 @@ class _CreateIssueScreenState extends State<CreateIssueScreen> {
             final val = i + 1;
             final selected = val <= _importance;
             return GestureDetector(
-              onTap: () => setState(() => _importance = val),
+              onTap: _isLoading ? null : () => setState(() => _importance = val),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 150),
                 width: 52,
@@ -236,4 +373,11 @@ class _CreateIssueScreenState extends State<CreateIssueScreen> {
       ],
     );
   }
+}
+
+class _IssueOption {
+  const _IssueOption(this.value, this.label);
+
+  final String value;
+  final String label;
 }
