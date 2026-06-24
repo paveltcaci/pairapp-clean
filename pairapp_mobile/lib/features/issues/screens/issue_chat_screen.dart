@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../../../theme/app_colors.dart';
 import '../../../shared/models/issue_message.dart';
 import '../../../shared/models/mock_data.dart';
+import '../../../shared/services/agreement_service.dart';
 import '../../../shared/services/issue_service.dart';
 import '../../../shared/widgets/app_card.dart';
 import '../../../shared/widgets/status_badge.dart';
@@ -30,6 +31,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
   final TextEditingController _msgController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final IssueService _issueService = IssueService();
+  final AgreementService _agreementService = AgreementService();
 
   late final Stream<List<IssueMessage>> _messagesStream;
   bool _isSending = false;
@@ -99,6 +101,39 @@ class _IssueChatScreenState extends State<IssueChatScreen>
       );
     });
   }
+
+  // ── Propose Agreement ────────────────────────────────────────────────────
+
+  void _showProposeAgreementSheet(IssueMessage message) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ProposeAgreementSheet(
+        issueId: widget.issueId,
+        solutionText: message.text,
+        agreementService: _agreementService,
+        onSuccess: () {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Договорённость предложена'),
+              backgroundColor: Color(0xFF2D2D3A),
+            ),
+          );
+        },
+        onError: (String msg) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(msg),
+              backgroundColor: Colors.red.shade900,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -251,43 +286,90 @@ class _IssueChatScreenState extends State<IssueChatScreen>
 
   Widget _buildBubble(IssueMessage message) {
     final isMe = _currentUserId != null && message.authorId == _currentUserId;
+    final isSolution = message.type == IssueMessageType.solution;
 
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 260),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          gradient: isMe ? AppColors.purpleGradient : null,
-          color: isMe ? null : AppColors.bgCard,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(isMe ? 16 : 4),
-            bottomRight: Radius.circular(isMe ? 4 : 16),
-          ),
-          border: isMe ? null : Border.all(color: AppColors.bgCardLight),
-          boxShadow: isMe
-              ? [
-                  BoxShadow(
-                    color: AppColors.purple.withValues(alpha: 0.25),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
+      child: Column(
+        crossAxisAlignment:
+            isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            constraints: const BoxConstraints(maxWidth: 260),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              gradient: isMe ? AppColors.purpleGradient : null,
+              color: isMe ? null : AppColors.bgCard,
+              borderRadius: BorderRadius.only(
+                topLeft: const Radius.circular(16),
+                topRight: const Radius.circular(16),
+                bottomLeft: Radius.circular(isMe ? 16 : 4),
+                bottomRight: Radius.circular(isMe ? 4 : 16),
+              ),
+              border: isMe ? null : Border.all(color: AppColors.bgCardLight),
+              boxShadow: isMe
+                  ? [
+                      BoxShadow(
+                        color: AppColors.purple.withValues(alpha: 0.25),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildTypeBadge(message.type, isMe: isMe),
+                const SizedBox(height: 5),
+                Text(
+                  message.text,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: isMe ? Colors.white : AppColors.textPrimary,
                   ),
-                ]
-              : null,
+                ),
+              ],
+            ),
+          ),
+          if (isSolution) ...[
+            const SizedBox(height: 4),
+            _buildProposeButton(message, isMe: isMe),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProposeButton(IssueMessage message, {required bool isMe}) {
+    return GestureDetector(
+      onTap: () => _showProposeAgreementSheet(message),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: AppColors.statusResolved.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: AppColors.statusResolved.withValues(alpha: 0.35),
+          ),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _buildTypeBadge(message.type, isMe: isMe),
-            const SizedBox(height: 5),
+            Icon(
+              Icons.handshake_outlined,
+              size: 13,
+              color: AppColors.statusResolved,
+            ),
+            const SizedBox(width: 5),
             Text(
-              message.text,
+              'Сделать договорённостью',
               style: TextStyle(
-                fontSize: 14,
-                color: isMe ? Colors.white : AppColors.textPrimary,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: AppColors.statusResolved,
               ),
             ),
           ],
@@ -507,5 +589,295 @@ class _IssueChatScreenState extends State<IssueChatScreen>
         );
       },
     );
+  }
+}
+
+// ── _ProposeAgreementSheet ──────────────────────────────────────────────────
+
+class _ProposeAgreementSheet extends StatefulWidget {
+  const _ProposeAgreementSheet({
+    required this.issueId,
+    required this.solutionText,
+    required this.agreementService,
+    required this.onSuccess,
+    required this.onError,
+  });
+
+  final String issueId;
+  final String solutionText;
+  final AgreementService agreementService;
+  final VoidCallback onSuccess;
+  final void Function(String message) onError;
+
+  @override
+  State<_ProposeAgreementSheet> createState() => _ProposeAgreementSheetState();
+}
+
+class _ProposeAgreementSheetState extends State<_ProposeAgreementSheet> {
+  late final TextEditingController _titleController;
+  late final TextEditingController _descController;
+  int _checkIntervalDays = 7;
+  bool _isLoading = false;
+
+  static const List<int> _intervals = [1, 3, 7, 14, 30];
+
+  @override
+  void initState() {
+    super.initState();
+    final text = widget.solutionText;
+    _titleController = TextEditingController(
+      text: text.length > 60 ? '${text.substring(0, 60)}...' : text,
+    );
+    _descController = TextEditingController(text: text);
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _descController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _handlePropose() async {
+    final title = _titleController.text.trim();
+    if (title.isEmpty) {
+      widget.onError('Введите название договорённости.');
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      await widget.agreementService.proposeAgreement(
+        issueId: widget.issueId,
+        title: title,
+        description: _descController.text.trim().isEmpty
+            ? null
+            : _descController.text.trim(),
+        checkIntervalDays: _checkIntervalDays,
+      );
+
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      widget.onSuccess();
+    } on AgreementServiceException catch (e) {
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      widget.onError(e.message);
+    } catch (_) {
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      widget.onError('Не удалось предложить договорённость.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + bottomInset),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E2E),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFF2D2D3A)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Handle bar
+          Center(
+            child: Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0xFF3D3D50),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Title
+          const Text(
+            'Предложить договорённость',
+            style: TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Title field
+          _buildLabel('Название'),
+          const SizedBox(height: 6),
+          _buildTextField(
+            controller: _titleController,
+            hint: 'Краткое название договорённости',
+            maxLines: 2,
+          ),
+          const SizedBox(height: 14),
+
+          // Description field
+          _buildLabel('Описание'),
+          const SizedBox(height: 6),
+          _buildTextField(
+            controller: _descController,
+            hint: 'Подробнее о договорённости',
+            maxLines: 4,
+          ),
+          const SizedBox(height: 16),
+
+          // Interval selector
+          _buildLabel('Интервал проверки'),
+          const SizedBox(height: 8),
+          _buildIntervalSelector(),
+          const SizedBox(height: 24),
+
+          // Propose button
+          SizedBox(
+            width: double.infinity,
+            child: GestureDetector(
+              onTap: _isLoading ? null : _handlePropose,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                height: 48,
+                decoration: BoxDecoration(
+                  gradient: _isLoading
+                      ? null
+                      : AppColors.purpleGradient,
+                  color: _isLoading ? const Color(0xFF2D2D3A) : null,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: _isLoading
+                      ? null
+                      : [
+                          BoxShadow(
+                            color: AppColors.purple.withValues(alpha: 0.35),
+                            blurRadius: 12,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                ),
+                child: Center(
+                  child: _isLoading
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            color: AppColors.textMuted,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : const Text(
+                          'Предложить',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                          ),
+                        ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLabel(String text) {
+    return Text(
+      text,
+      style: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        color: AppColors.textMuted,
+        letterSpacing: 0.4,
+      ),
+    );
+  }
+
+  Widget _buildTextField({
+    required TextEditingController controller,
+    required String hint,
+    int maxLines = 1,
+  }) {
+    return TextField(
+      controller: controller,
+      enabled: !_isLoading,
+      maxLines: maxLines,
+      style: const TextStyle(
+        fontSize: 14,
+        color: AppColors.textPrimary,
+      ),
+      decoration: InputDecoration(
+        hintText: hint,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      ),
+    );
+  }
+
+  Widget _buildIntervalSelector() {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: _intervals.map((days) {
+        final isSelected = _checkIntervalDays == days;
+        return GestureDetector(
+          onTap: _isLoading
+              ? null
+              : () => setState(() => _checkIntervalDays = days),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? AppColors.purple.withValues(alpha: 0.18)
+                  : const Color(0xFF2D2D3A),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: isSelected
+                    ? AppColors.purple
+                    : const Color(0xFF3D3D50),
+                width: 1,
+              ),
+            ),
+            child: Text(
+              _intervalLabel(days),
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight:
+                    isSelected ? FontWeight.w600 : FontWeight.w400,
+                color: isSelected
+                    ? AppColors.purple
+                    : AppColors.textMuted,
+              ),
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  String _intervalLabel(int days) {
+    switch (days) {
+      case 1:
+        return '1 день';
+      case 3:
+        return '3 дня';
+      case 7:
+        return '7 дней';
+      case 14:
+        return '14 дней';
+      case 30:
+        return '30 дней';
+      default:
+        return '$days дней';
+    }
   }
 }
