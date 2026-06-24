@@ -47,6 +47,25 @@ enum IssueMessageType {
         return 'unknown';
     }
   }
+
+  String get displayLabel {
+    switch (this) {
+      case IssueMessageType.comment:
+        return 'Комментарий';
+      case IssueMessageType.objection:
+        return 'Возражение';
+      case IssueMessageType.solution:
+        return 'Решение';
+      case IssueMessageType.agreement:
+        return 'Договорённость';
+      case IssueMessageType.checkin:
+        return 'Проверка';
+      case IssueMessageType.reopen:
+        return 'Открыто снова';
+      case IssueMessageType.unknown:
+        return 'Сообщение';
+    }
+  }
 }
 
 class IssueMessage {

@@ -33,6 +33,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
 
   late final Stream<List<IssueMessage>> _messagesStream;
   bool _isSending = false;
+  IssueMessageType _selectedMessageType = IssueMessageType.comment;
 
   String? get _currentUserId => FirebaseAuth.instance.currentUser?.uid;
 
@@ -61,6 +62,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
       await _issueService.createIssueMessage(
         issueId: widget.issueId,
         text: text,
+        type: _selectedMessageType.backendValue,
       );
 
       _msgController.clear();
@@ -275,12 +277,59 @@ class _IssueChatScreenState extends State<IssueChatScreen>
                 ]
               : null,
         ),
-        child: Text(
-          message.text,
-          style: TextStyle(
-            fontSize: 14,
-            color: isMe ? Colors.white : AppColors.textPrimary,
-          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildTypeBadge(message.type, isMe: isMe),
+            const SizedBox(height: 5),
+            Text(
+              message.text,
+              style: TextStyle(
+                fontSize: 14,
+                color: isMe ? Colors.white : AppColors.textPrimary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Color _messageTypeColor(IssueMessageType type) {
+    switch (type) {
+      case IssueMessageType.objection:
+        return AppColors.statusDiscussion;
+      case IssueMessageType.solution:
+        return AppColors.statusResolved;
+      case IssueMessageType.comment:
+        return AppColors.lavender;
+      case IssueMessageType.agreement:
+      case IssueMessageType.checkin:
+      case IssueMessageType.reopen:
+      case IssueMessageType.unknown:
+        return AppColors.textMuted;
+    }
+  }
+
+  Widget _buildTypeBadge(IssueMessageType type, {required bool isMe}) {
+    final badgeColor = _messageTypeColor(type);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: isMe
+            ? Colors.white.withValues(alpha: 0.9)
+            : badgeColor.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: badgeColor.withValues(alpha: 0.25)),
+      ),
+      child: Text(
+        type.displayLabel,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: badgeColor,
         ),
       ),
     );
@@ -293,51 +342,109 @@ class _IssueChatScreenState extends State<IssueChatScreen>
         color: AppColors.bgSurface,
         border: Border(top: BorderSide(color: AppColors.bgCardLight)),
       ),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Expanded(
-            child: TextField(
-              controller: _msgController,
-              enabled: !_isSending,
-              style: const TextStyle(color: AppColors.textPrimary),
-              decoration: const InputDecoration(
-                hintText: 'Напишите сообщение...',
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              ),
-              onSubmitted: (_) => _handleSend(),
-            ),
-          ),
-          const SizedBox(width: 10),
-          GestureDetector(
-            onTap: _isSending ? null : _handleSend,
-            child: Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                gradient: AppColors.purpleGradient,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.purple.withValues(alpha: 0.4),
-                    blurRadius: 10,
-                    offset: const Offset(0, 2),
+          _buildMessageTypeChips(),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _msgController,
+                  enabled: !_isSending,
+                  style: const TextStyle(color: AppColors.textPrimary),
+                  decoration: const InputDecoration(
+                    hintText: 'Напишите сообщение...',
+                    contentPadding:
+                        EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   ),
-                ],
+                  onSubmitted: (_) => _handleSend(),
+                ),
               ),
-              child: _isSending
-                  ? const Padding(
-                      padding: EdgeInsets.all(12),
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2,
+              const SizedBox(width: 10),
+              GestureDetector(
+                onTap: _isSending ? null : _handleSend,
+                child: Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    gradient: AppColors.purpleGradient,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.purple.withValues(alpha: 0.4),
+                        blurRadius: 10,
+                        offset: const Offset(0, 2),
                       ),
-                    )
-                  : const Icon(Icons.send_rounded,
-                      color: Colors.white, size: 18),
-            ),
+                    ],
+                  ),
+                  child: _isSending
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : const Icon(Icons.send_rounded,
+                          color: Colors.white, size: 18),
+                ),
+              ),
+            ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildMessageTypeChips() {
+    const types = <IssueMessageType>[
+      IssueMessageType.comment,
+      IssueMessageType.objection,
+      IssueMessageType.solution,
+    ];
+
+    return SizedBox(
+      height: 32,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: types.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) => _buildTypeChip(types[index]),
+      ),
+    );
+  }
+
+  Widget _buildTypeChip(IssueMessageType type) {
+    final isSelected = _selectedMessageType == type;
+    final color = _messageTypeColor(type);
+
+    return GestureDetector(
+      onTap: _isSending
+          ? null
+          : () => setState(() => _selectedMessageType = type),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? color.withValues(alpha: 0.18)
+              : AppColors.bgCard,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: isSelected ? color : AppColors.bgCardLight,
+            width: 1,
+          ),
+        ),
+        child: Text(
+          type.displayLabel,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+            color: isSelected ? color : AppColors.textMuted,
+          ),
+        ),
       ),
     );
   }

@@ -1,0 +1,355 @@
+diff --git a/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart b/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart
+index 061a12e..97e22be 100644
+--- a/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart
++++ b/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart
+@@ -32,6 +32,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
+ 
+   late final Stream<List<IssueMessage>> _messagesStream;
+   bool _isSending = false;
++  IssueMessageType _selectedMessageType = IssueMessageType.comment;
+ 
+   String? get _currentUserId => FirebaseAuth.instance.currentUser?.uid;
+ 
+@@ -60,6 +61,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
+       await _issueService.createIssueMessage(
+         issueId: widget.issueId,
+         text: text,
++        type: _selectedMessageType.backendValue,
+       );
+       _msgController.clear();
+       _scrollToBottomSoon();
+@@ -277,12 +279,44 @@ class _IssueChatScreenState extends State<IssueChatScreen>
+                 ]
+               : null,
+         ),
+-        child: Text(
+-          message.text,
+-          style: TextStyle(
+-            fontSize: 14,
+-            color: isMe ? Colors.white : AppColors.textPrimary,
+-          ),
++        child: Column(
++          crossAxisAlignment: CrossAxisAlignment.start,
++          mainAxisSize: MainAxisSize.min,
++          children: [
++            if (message.type != IssueMessageType.comment)
++              Padding(
++                padding: const EdgeInsets.only(bottom: 4),
++                child: _buildTypeBadge(message.type, isMe: isMe),
++              ),
++            Text(
++              message.text,
++              style: TextStyle(
++                fontSize: 14,
++                color: isMe ? Colors.white : AppColors.textPrimary,
++              ),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++
++  Widget _buildTypeBadge(IssueMessageType type, {required bool isMe}) {
++    final badgeColor = type.badgeColor;
++    return Container(
++      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
++      decoration: BoxDecoration(
++        color: isMe
++            ? Colors.white.withValues(alpha: 0.18)
++            : badgeColor.withValues(alpha: 0.15),
++        borderRadius: BorderRadius.circular(6),
++      ),
++      child: Text(
++        type.displayLabel,
++        style: TextStyle(
++          fontSize: 10,
++          fontWeight: FontWeight.w600,
++          color: isMe ? Colors.white : badgeColor,
+         ),
+       ),
+     );
+@@ -295,55 +329,114 @@ class _IssueChatScreenState extends State<IssueChatScreen>
+         color: AppColors.bgSurface,
+         border: Border(top: BorderSide(color: AppColors.bgCardLight)),
+       ),
+-      child: Row(
++      child: Column(
++        mainAxisSize: MainAxisSize.min,
+         children: [
+-          Expanded(
+-            child: TextField(
+-              controller: _msgController,
+-              enabled: !_isSending,
+-              style: const TextStyle(color: AppColors.textPrimary),
+-              decoration: const InputDecoration(
+-                hintText: 'Напишите сообщение...',
+-                contentPadding:
+-                    EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+-              ),
+-              onSubmitted: (_) => _handleSend(),
+-            ),
+-          ),
+-          const SizedBox(width: 10),
+-          GestureDetector(
+-            onTap: _isSending ? null : _handleSend,
+-            child: Container(
+-              width: 44,
+-              height: 44,
+-              decoration: BoxDecoration(
+-                gradient: AppColors.purpleGradient,
+-                borderRadius: BorderRadius.circular(12),
+-                boxShadow: [
+-                  BoxShadow(
+-                    color: AppColors.purple.withValues(alpha: 0.4),
+-                    blurRadius: 10,
+-                    offset: const Offset(0, 2),
++          _buildMessageTypeChips(),
++          const SizedBox(height: 8),
++          Row(
++            children: [
++              Expanded(
++                child: TextField(
++                  controller: _msgController,
++                  enabled: !_isSending,
++                  style: const TextStyle(color: AppColors.textPrimary),
++                  decoration: const InputDecoration(
++                    hintText: 'Напишите сообщение...',
++                    contentPadding:
++                        EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                   ),
+-                ],
++                  onSubmitted: (_) => _handleSend(),
++                ),
+               ),
+-              child: _isSending
+-                  ? const Padding(
+-                      padding: EdgeInsets.all(12),
+-                      child: CircularProgressIndicator(
+-                        color: Colors.white,
+-                        strokeWidth: 2,
++              const SizedBox(width: 10),
++              GestureDetector(
++                onTap: _isSending ? null : _handleSend,
++                child: Container(
++                  width: 44,
++                  height: 44,
++                  decoration: BoxDecoration(
++                    gradient: AppColors.purpleGradient,
++                    borderRadius: BorderRadius.circular(12),
++                    boxShadow: [
++                      BoxShadow(
++                        color: AppColors.purple.withValues(alpha: 0.4),
++                        blurRadius: 10,
++                        offset: const Offset(0, 2),
+                       ),
+-                    )
+-                  : const Icon(Icons.send_rounded,
+-                      color: Colors.white, size: 18),
+-            ),
++                    ],
++                  ),
++                  child: _isSending
++                      ? const Padding(
++                          padding: EdgeInsets.all(12),
++                          child: CircularProgressIndicator(
++                            color: Colors.white,
++                            strokeWidth: 2,
++                          ),
++                        )
++                      : const Icon(Icons.send_rounded,
++                          color: Colors.white, size: 18),
++                ),
++              ),
++            ],
+           ),
+         ],
+       ),
+     );
+   }
+ 
++  Widget _buildMessageTypeChips() {
++    return SizedBox(
++      height: 30,
++      child: ListView(
++        scrollDirection: Axis.horizontal,
++        children: IssueMessageType.values
++            .where((type) =>
++                type == IssueMessageType.comment ||
++                type == IssueMessageType.objection ||
++                type == IssueMessageType.solution)
++            .map(_buildTypeChip)
++            .toList(),
++      ),
++    );
++  }
++
++  Widget _buildTypeChip(IssueMessageType type) {
++    final isSelected = _selectedMessageType == type;
++    final color = type.badgeColor;
++
++    return Padding(
++      padding: const EdgeInsets.only(right: 8),
++      child: GestureDetector(
++        onTap: _isSending
++            ? null
++            : () => setState(() => _selectedMessageType = type),
++        child: AnimatedContainer(
++          duration: const Duration(milliseconds: 150),
++          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
++          decoration: BoxDecoration(
++            color: isSelected
++                ? color.withValues(alpha: 0.18)
++                : AppColors.bgCard,
++            borderRadius: BorderRadius.circular(8),
++            border: Border.all(
++              color: isSelected ? color : AppColors.bgCardLight,
++              width: 1,
++            ),
++          ),
++          child: Text(
++            type.displayLabel,
++            style: TextStyle(
++              fontSize: 12,
++              fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
++              color: isSelected ? color : AppColors.textMuted,
++            ),
++          ),
++        ),
++      ),
++    );
++  }
++
+   Widget _buildAgreementsTab() {
+     return ListView.separated(
+       padding: const EdgeInsets.all(20),
+diff --git a/pairapp_mobile/lib/shared/models/issue_message.dart b/pairapp_mobile/lib/shared/models/issue_message.dart
+index 662a6a9..cd9326b 100644
+--- a/pairapp_mobile/lib/shared/models/issue_message.dart
++++ b/pairapp_mobile/lib/shared/models/issue_message.dart
+@@ -1,13 +1,15 @@
+ import 'package:cloud_firestore/cloud_firestore.dart';
++import 'package:flutter/material.dart';
++
++import '../../theme/app_colors.dart';
+ 
+ /// Message types accepted by the backend `createIssueMessage` callable.
+ /// Source of truth: pairapp-backend/functions/src/issues/createIssueMessage.js
+ /// `USER_INITIATED_TYPES = ["comment", "objection", "solution"]`.
+ ///
+-/// Only `comment` is sent from the UI for now. `objection` and `solution`
+-/// are reserved for a future, fuller discussion-flow UI. Other values
+-/// (e.g. `checkin`, `reopen`, `agreement`) are system-generated and are
+-/// only ever *read*, never sent, from this screen.
++/// All three are selectable from the chat UI. Other values (e.g.
++/// `checkin`, `reopen`, `agreement`) are system-generated and are only
++/// ever *read*, never sent, from this screen.
+ enum IssueMessageType {
+   comment,
+   objection,
+@@ -54,6 +56,45 @@ enum IssueMessageType {
+         return 'unknown';
+     }
+   }
++
++  /// Short Russian label for the chat UI badge/chip. Only the three
++  /// user-initiated types have a polished label; everything else falls
++  /// back to a generic label rather than exposing internal type names.
++  String get displayLabel {
++    switch (this) {
++      case IssueMessageType.comment:
++        return 'Комментарий';
++      case IssueMessageType.objection:
++        return 'Возражение';
++      case IssueMessageType.solution:
++        return 'Решение';
++      case IssueMessageType.checkin:
++      case IssueMessageType.reopen:
++      case IssueMessageType.agreement:
++      case IssueMessageType.unknown:
++        return 'Сообщение';
++    }
++  }
++
++  /// Accent color for the type badge/chip, reusing the app's existing
++  /// dark-premium palette rather than introducing new colors:
++  /// comment = neutral purple, objection = warm amber (reuses
++  /// `statusDiscussion`), solution = soft green (reuses `statusResolved`).
++  Color get badgeColor {
++    switch (this) {
++      case IssueMessageType.comment:
++        return AppColors.lavender;
++      case IssueMessageType.objection:
++        return AppColors.statusDiscussion;
++      case IssueMessageType.solution:
++        return AppColors.statusResolved;
++      case IssueMessageType.checkin:
++      case IssueMessageType.reopen:
++      case IssueMessageType.agreement:
++      case IssueMessageType.unknown:
++        return AppColors.textMuted;
++    }
++  }
+ }
+ 
+ /// A single message inside an issue's discussion thread.
+diff --git a/pairapp_mobile/lib/shared/services/issue_service.dart b/pairapp_mobile/lib/shared/services/issue_service.dart
+index 363e524..3f4f12c 100644
+--- a/pairapp_mobile/lib/shared/services/issue_service.dart
++++ b/pairapp_mobile/lib/shared/services/issue_service.dart
+@@ -125,15 +125,20 @@ class IssueService {
+   /// Sends a new chat message for [issueId] via the `createIssueMessage`
+   /// backend callable.
+   ///
+-  /// The backend requires a `type` field (`comment` | `objection` |
+-  /// `solution`). The plain chat input always sends `comment` for now;
+-  /// `objection`/`solution` are reserved for a future discussion-flow UI.
++  /// [type] must be one of `comment` | `objection` | `solution` (the
++  /// backend's `USER_INITIATED_TYPES`). Defaults to `comment` so existing
++  /// call sites that don't pass [type] keep working unchanged. Any other
++  /// value (null, empty, typo, a system-only type like `checkin`) safely
++  /// falls back to `comment` instead of sending something the backend
++  /// would reject.
+   Future<String> createIssueMessage({
+     required String issueId,
+     required String text,
++    String type = 'comment',
+   }) async {
+     final trimmedIssueId = issueId.trim();
+     final trimmedText = text.trim();
++    final resolvedType = _resolveMessageType(type);
+ 
+     if (trimmedIssueId.isEmpty) {
+       throw const IssueServiceException('issueId is required.');
+@@ -146,7 +151,7 @@ class IssueService {
+       final data = await _functionsService.call('createIssueMessage', {
+         'issueId': trimmedIssueId,
+         'text': trimmedText,
+-        'type': IssueMessageType.comment.backendValue,
++        'type': resolvedType.backendValue,
+       });
+ 
+       final messageId = data['messageId'] ?? data['id'];
+@@ -164,6 +169,22 @@ class IssueService {
+       throw IssueServiceException('Failed to send message.', cause: e);
+     }
+   }
++
++  /// Only `comment`, `objection`, and `solution` are valid for
++  /// user-initiated messages (see `USER_INITIATED_TYPES` in
++  /// createIssueMessage.js). Anything else — including null/empty —
++  /// safely resolves to `comment`.
++  IssueMessageType _resolveMessageType(String? type) {
++    switch (type) {
++      case 'objection':
++        return IssueMessageType.objection;
++      case 'solution':
++        return IssueMessageType.solution;
++      case 'comment':
++      default:
++        return IssueMessageType.comment;
++    }
++  }
+ }
+ 
+ class IssueServiceException implements Exception {

@@ -124,9 +124,11 @@ class IssueService {
   Future<String> createIssueMessage({
     required String issueId,
     required String text,
+    String type = 'comment',
   }) async {
     final trimmedIssueId = issueId.trim();
     final trimmedText = text.trim();
+    final resolvedType = _resolveUserMessageType(type);
 
     if (trimmedIssueId.isEmpty) {
       throw const IssueServiceException('issueId is required.');
@@ -139,7 +141,7 @@ class IssueService {
       final data = await _functionsService.call('createIssueMessage', {
         'issueId': trimmedIssueId,
         'text': trimmedText,
-        'type': IssueMessageType.comment.backendValue,
+        'type': resolvedType.backendValue,
       });
 
       final messageId = data['messageId'] ?? data['id'];
@@ -155,6 +157,18 @@ class IssueService {
     } catch (e) {
       if (e is IssueServiceException) rethrow;
       throw IssueServiceException('Failed to send message.', cause: e);
+    }
+  }
+
+  IssueMessageType _resolveUserMessageType(String? type) {
+    switch (type?.trim()) {
+      case 'objection':
+        return IssueMessageType.objection;
+      case 'solution':
+        return IssueMessageType.solution;
+      case 'comment':
+      default:
+        return IssueMessageType.comment;
     }
   }
 
