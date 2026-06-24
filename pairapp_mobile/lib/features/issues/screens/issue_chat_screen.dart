@@ -5,9 +5,16 @@ import '../../../shared/widgets/app_card.dart';
 import '../../../shared/widgets/status_badge.dart';
 
 class IssueChatScreen extends StatefulWidget {
-  final MockIssue issue;
+  final String issueId;
+  final String title;
+  final String status;
 
-  const IssueChatScreen({super.key, required this.issue});
+  const IssueChatScreen({
+    super.key,
+    required this.issueId,
+    required this.title,
+    required this.status,
+  });
 
   @override
   State<IssueChatScreen> createState() => _IssueChatScreenState();
@@ -73,7 +80,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  widget.issue.title,
+                  widget.title,
                   style: const TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
@@ -82,7 +89,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 2),
-                StatusBadge(status: widget.issue.status),
+                StatusBadge(status: widget.status),
               ],
             ),
           ),

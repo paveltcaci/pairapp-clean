@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
-import '../../theme/app_colors.dart';
-import '../../shared/models/mock_data.dart';
+
+import '../../shared/models/issue.dart';
+import '../../shared/services/issue_service.dart';
+import '../../shared/services/user_service.dart';
 import '../../shared/widgets/app_card.dart';
 import '../../shared/widgets/status_badge.dart';
+import '../../theme/app_colors.dart';
 import 'screens/issue_chat_screen.dart';
 
 class IssuesScreen extends StatefulWidget {
@@ -13,15 +16,49 @@ class IssuesScreen extends StatefulWidget {
 }
 
 class _IssuesScreenState extends State<IssuesScreen> {
-  int _filterIndex = 0;
-  final List<String> _filters = ['Все', 'Мои', 'Партнёра', 'Открытые'];
+  final _userService = UserService();
+  final _issueService = IssueService();
 
-  List<MockIssue> get _filteredIssues {
+  int _filterIndex = 0;
+  final List<String> _filters = const ['Все', 'Мои', 'Партнёра', 'Открытые'];
+
+  bool _loadingProfile = true;
+  String? _coupleId;
+  String? _currentUid;
+  String? _profileError;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    try {
+      final user = await _userService.getCurrentUserProfile();
+      if (!mounted) return;
+
+      setState(() {
+        _currentUid = user?.id;
+        _coupleId = user?.currentCoupleId;
+        _loadingProfile = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() {
+        _profileError = 'Не удалось загрузить профиль';
+        _loadingProfile = false;
+      });
+    }
+  }
+
+  List<Issue> _applyFilter(List<Issue> issues) {
     return switch (_filterIndex) {
-      1 => MockData.issues.where((i) => i.author == 'Павел').toList(),
-      2 => MockData.issues.where((i) => i.author == 'Анна').toList(),
-      3 => MockData.issues.where((i) => i.status == 'open').toList(),
-      _ => MockData.issues,
+      1 => issues.where((issue) => issue.authorId == _currentUid).toList(),
+      2 => issues.where((issue) => issue.authorId != _currentUid).toList(),
+      3 => issues.where((issue) => issue.isOpen || issue.isReopened).toList(),
+      _ => issues,
     };
   }
 
@@ -36,26 +73,72 @@ class _IssuesScreenState extends State<IssuesScreen> {
             children: [
               _buildAppBar(context),
               _buildFilters(),
-              Expanded(
-                child: _filteredIssues.isEmpty
-                    ? const Center(
-                        child: Text(
-                          'Нет проблем в этой категории',
-                          style: TextStyle(color: AppColors.textMuted),
-                        ),
-                      )
-                    : ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-                        itemCount: _filteredIssues.length,
-                        separatorBuilder: (context, index) => const SizedBox(height: 12),
-                        itemBuilder: (context, i) =>
-                            _buildIssueCard(context, _filteredIssues[i]),
-                      ),
-              ),
+              Expanded(child: _buildBody()),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_loadingProfile) {
+      return const Center(
+        child: CircularProgressIndicator(color: AppColors.purple),
+      );
+    }
+
+    if (_profileError != null) {
+      return _buildMessage(
+        icon: Icons.error_outline,
+        title: 'Ошибка',
+        subtitle: _profileError!,
+      );
+    }
+
+    final coupleId = _coupleId;
+    if (coupleId == null || coupleId.isEmpty) {
+      return _buildMessage(
+        icon: Icons.people_outline,
+        title: 'Сначала создайте пару',
+        subtitle: 'Пригласите партнёра, чтобы начать обсуждение проблем',
+      );
+    }
+
+    return StreamBuilder<List<Issue>>(
+      stream: _issueService.watchCoupleIssues(coupleId),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(
+            child: CircularProgressIndicator(color: AppColors.purple),
+          );
+        }
+
+        if (snapshot.hasError) {
+          return _buildMessage(
+            icon: Icons.warning_amber_rounded,
+            title: 'Что-то пошло не так',
+            subtitle: 'Не удалось загрузить проблемы. Попробуйте позже.',
+          );
+        }
+
+        final allIssues = snapshot.data ?? const <Issue>[];
+        final issues = _applyFilter(allIssues);
+
+        if (issues.isEmpty) {
+          return _buildEmptyState(allIssues.isEmpty);
+        }
+
+        return ListView.separated(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+          itemCount: issues.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 12),
+          itemBuilder: (context, index) => _buildIssueCard(
+            context,
+            issues[index],
+          ),
+        );
+      },
     );
   }
 
@@ -76,7 +159,11 @@ class _IssuesScreenState extends State<IssuesScreen> {
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: AppColors.bgCardLight),
             ),
-            child: const Icon(Icons.tune, color: AppColors.textSecondary, size: 18),
+            child: const Icon(
+              Icons.tune,
+              color: AppColors.textSecondary,
+              size: 18,
+            ),
           ),
         ],
       ),
@@ -90,11 +177,11 @@ class _IssuesScreenState extends State<IssuesScreen> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 20),
         itemCount: _filters.length,
-        separatorBuilder: (context, index) => const SizedBox(width: 8),
-        itemBuilder: (context, i) {
-          final selected = i == _filterIndex;
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final selected = index == _filterIndex;
           return GestureDetector(
-            onTap: () => setState(() => _filterIndex = i),
+            onTap: () => setState(() => _filterIndex = index),
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -102,9 +189,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
                 gradient: selected ? AppColors.purpleGradient : null,
                 color: selected ? null : AppColors.bgCard,
                 borderRadius: BorderRadius.circular(20),
-                border: selected
-                    ? null
-                    : Border.all(color: AppColors.bgCardLight),
+                border: selected ? null : Border.all(color: AppColors.bgCardLight),
                 boxShadow: selected
                     ? [
                         BoxShadow(
@@ -116,12 +201,11 @@ class _IssuesScreenState extends State<IssuesScreen> {
                     : null,
               ),
               child: Text(
-                _filters[i],
+                _filters[index],
                 style: TextStyle(
                   color: selected ? Colors.white : AppColors.textSecondary,
                   fontSize: 13,
-                  fontWeight:
-                      selected ? FontWeight.w600 : FontWeight.normal,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
                 ),
               ),
             ),
@@ -131,12 +215,21 @@ class _IssuesScreenState extends State<IssuesScreen> {
     );
   }
 
-  Widget _buildIssueCard(BuildContext context, MockIssue issue) {
+  Widget _buildIssueCard(BuildContext context, Issue issue) {
+    final isMyIssue = issue.authorId == _currentUid;
+    final authorLabel = isMyIssue ? 'Я' : 'Партнёр';
+    final avatarLetter = isMyIssue ? 'Я' : 'П';
+    final statusForBadge = _statusForBadge(issue.status);
+
     return AppCard(
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => IssueChatScreen(issue: issue),
+          builder: (_) => IssueChatScreen(
+            issueId: issue.id,
+            title: issue.title,
+            status: statusForBadge,
+          ),
         ),
       ),
       child: Column(
@@ -146,7 +239,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
             children: [
               Expanded(
                 child: Text(
-                  issue.title,
+                  issue.title.isEmpty ? 'Без названия' : issue.title,
                   style: const TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
@@ -154,12 +247,14 @@ class _IssuesScreenState extends State<IssuesScreen> {
                   ),
                 ),
               ),
-              StatusBadge(status: issue.status),
+              StatusBadge(status: statusForBadge),
             ],
           ),
           const SizedBox(height: 8),
           Text(
-            issue.description,
+            issue.description?.isNotEmpty == true
+                ? issue.description!
+                : 'Описание не заполнено',
             style: const TextStyle(
               fontSize: 13,
               color: AppColors.textSecondary,
@@ -174,7 +269,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
                 radius: 12,
                 backgroundColor: AppColors.purple.withValues(alpha: 0.2),
                 child: Text(
-                  issue.author[0],
+                  avatarLetter,
                   style: const TextStyle(
                     fontSize: 11,
                     color: AppColors.purple,
@@ -184,13 +279,23 @@ class _IssuesScreenState extends State<IssuesScreen> {
               ),
               const SizedBox(width: 8),
               Text(
-                issue.author,
+                authorLabel,
                 style: const TextStyle(
                   fontSize: 12,
                   color: AppColors.textSecondary,
                 ),
               ),
               const Spacer(),
+              if (issue.feelings.isNotEmpty) ...[
+                Text(
+                  _feelingLabel(issue.feelings.first),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textMuted,
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
@@ -198,7 +303,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
-                  issue.category,
+                  _categoryLabel(issue.category),
                   style: const TextStyle(
                     fontSize: 11,
                     color: AppColors.textMuted,
@@ -209,10 +314,10 @@ class _IssuesScreenState extends State<IssuesScreen> {
               Row(
                 children: List.generate(
                   5,
-                  (i) => Icon(
+                  (index) => Icon(
                     Icons.circle,
                     size: 6,
-                    color: i < issue.importance
+                    color: index < issue.importanceLevel
                         ? AppColors.purple
                         : AppColors.bgCardLight,
                   ),
@@ -223,5 +328,92 @@ class _IssuesScreenState extends State<IssuesScreen> {
         ],
       ),
     );
+  }
+
+  Widget _buildEmptyState(bool trueEmpty) {
+    return _buildMessage(
+      icon: trueEmpty ? Icons.inbox_outlined : Icons.filter_list_off,
+      title: trueEmpty ? 'Пока нет проблем' : 'Нет проблем в этой категории',
+      subtitle: trueEmpty
+          ? 'Создайте первую проблему, чтобы начать обсуждение'
+          : 'Попробуйте выбрать другой фильтр',
+    );
+  }
+
+  Widget _buildMessage({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 48, color: AppColors.textMuted),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              subtitle,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppColors.textMuted,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _statusForBadge(IssueStatus status) {
+    return switch (status) {
+      IssueStatus.open || IssueStatus.reopened => 'open',
+      IssueStatus.inDiscussion ||
+      IssueStatus.agreementProposed ||
+      IssueStatus.agreed =>
+        'discussion',
+      IssueStatus.solved || IssueStatus.archived => 'resolved',
+      IssueStatus.unknown => 'open',
+    };
+  }
+
+  String _categoryLabel(String category) {
+    return switch (category) {
+      'communication' => 'Общение',
+      'time_together' => 'Время',
+      'household' => 'Быт',
+      'money' => 'Финансы',
+      'intimacy' => 'Близость',
+      'jealousy' => 'Ревность',
+      'future_plans' => 'Будущее',
+      'other' => 'Другое',
+      _ => category,
+    };
+  }
+
+  String _feelingLabel(String feeling) {
+    return switch (feeling) {
+      'sadness' => 'Грустно',
+      'anger' => 'Злюсь',
+      'anxiety' => 'Тревожно',
+      'loneliness' => 'Одиноко',
+      'tiredness' => 'Усталость',
+      'hurt' => 'Обидно',
+      'confusion' => 'Смущение',
+      'fear' => 'Страх',
+      _ => feeling,
+    };
   }
 }
