@@ -1,0 +1,373 @@
+diff --git a/pairapp_mobile/lib/shared/models/agreement.dart b/pairapp_mobile/lib/shared/models/agreement.dart
+new file mode 100644
+index 0000000..8e9bb96
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/models/agreement.dart
+@@ -0,0 +1,159 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++
++/// Backend agreement statuses.
++/// Source of truth: pairapp-backend/functions/src/types/common.ts.
++enum AgreementStatus {
++  proposed,
++  acceptedByOne,
++  acceptedByBoth,
++  active,
++  failed,
++  completed,
++  archived,
++  unknown;
++
++  static AgreementStatus fromString(String? value) {
++    switch (value) {
++      case 'proposed':
++        return AgreementStatus.proposed;
++      case 'accepted_by_one':
++        return AgreementStatus.acceptedByOne;
++      case 'accepted_by_both':
++        return AgreementStatus.acceptedByBoth;
++      case 'active':
++        return AgreementStatus.active;
++      case 'failed':
++        return AgreementStatus.failed;
++      case 'completed':
++        return AgreementStatus.completed;
++      case 'archived':
++        return AgreementStatus.archived;
++      default:
++        return AgreementStatus.unknown;
++    }
++  }
++
++  String get backendValue {
++    switch (this) {
++      case AgreementStatus.proposed:
++        return 'proposed';
++      case AgreementStatus.acceptedByOne:
++        return 'accepted_by_one';
++      case AgreementStatus.acceptedByBoth:
++        return 'accepted_by_both';
++      case AgreementStatus.active:
++        return 'active';
++      case AgreementStatus.failed:
++        return 'failed';
++      case AgreementStatus.completed:
++        return 'completed';
++      case AgreementStatus.archived:
++        return 'archived';
++      case AgreementStatus.unknown:
++        return 'unknown';
++    }
++  }
++}
++
++/// Represents an agreement document from the Firestore `agreements` collection.
++/// Source of truth: pairapp-backend/functions/src/types/agreement.ts.
++class Agreement {
++  const Agreement({
++    required this.id,
++    required this.coupleId,
++    required this.issueId,
++    required this.title,
++    required this.description,
++    required this.proposedBy,
++    required this.acceptedByPartnerA,
++    required this.acceptedByPartnerB,
++    required this.status,
++    required this.checkIntervalDays,
++    required this.checkDate,
++    required this.createdAt,
++    required this.updatedAt,
++  });
++
++  final String id;
++  final String coupleId;
++  final String? issueId;
++  final String title;
++  final String? description;
++  final String proposedBy;
++  final bool acceptedByPartnerA;
++  final bool acceptedByPartnerB;
++  final AgreementStatus status;
++
++  /// null means "custom date" — checkDate is still expected to be set.
++  final int? checkIntervalDays;
++  final DateTime? checkDate;
++  final DateTime? createdAt;
++  final DateTime? updatedAt;
++
++  bool get isPending =>
++      status == AgreementStatus.proposed ||
++      status == AgreementStatus.acceptedByOne;
++
++  bool get isAccepted =>
++      status == AgreementStatus.acceptedByBoth ||
++      status == AgreementStatus.active;
++
++  bool get isCompleted => status == AgreementStatus.completed;
++
++  bool get isFailed => status == AgreementStatus.failed;
++
++  bool get isActive => status == AgreementStatus.active;
++
++  factory Agreement.fromFirestore(
++    DocumentSnapshot<Map<String, dynamic>> doc,
++  ) {
++    return Agreement.fromMap(doc.data() ?? <String, dynamic>{}, id: doc.id);
++  }
++
++  factory Agreement.fromMap(
++    Map<String, dynamic> data, {
++    required String id,
++  }) {
++    final dataId = _stringOrNull(data['id']);
++
++    return Agreement(
++      id: dataId?.isNotEmpty == true ? dataId! : id,
++      coupleId: _stringOrNull(data['coupleId']) ?? '',
++      issueId: _stringOrNull(data['issueId']),
++      title: _stringOrNull(data['title']) ?? '',
++      description: _stringOrNull(data['description']),
++      proposedBy: _stringOrNull(data['proposedBy']) ?? '',
++      acceptedByPartnerA: _boolOrFalse(data['acceptedByPartnerA']),
++      acceptedByPartnerB: _boolOrFalse(data['acceptedByPartnerB']),
++      status: AgreementStatus.fromString(_stringOrNull(data['status'])),
++      checkIntervalDays: _intOrNull(data['checkIntervalDays']),
++      checkDate: _toDateTime(data['checkDate']),
++      createdAt: _toDateTime(data['createdAt']),
++      updatedAt: _toDateTime(data['updatedAt']),
++    );
++  }
++
++  static String? _stringOrNull(dynamic value) {
++    if (value is String) return value;
++    return null;
++  }
++
++  static bool _boolOrFalse(dynamic value) {
++    if (value is bool) return value;
++    return false;
++  }
++
++  static int? _intOrNull(dynamic value) {
++    if (value == null) return null;
++    if (value is int) return value;
++    if (value is num) return value.toInt();
++    return null;
++  }
++
++  static DateTime? _toDateTime(dynamic value) {
++    if (value == null) return null;
++    if (value is Timestamp) return value.toDate();
++    if (value is DateTime) return value;
++    return null;
++  }
++}
+diff --git a/pairapp_mobile/lib/shared/services/agreement_service.dart b/pairapp_mobile/lib/shared/services/agreement_service.dart
+new file mode 100644
+index 0000000..53f2686
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/services/agreement_service.dart
+@@ -0,0 +1,202 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++
++import '../models/agreement.dart';
++import 'functions_service.dart';
++
++/// Service for reading and mutating agreement documents.
++///
++/// Firestore collection: `agreements`.
++/// Backend functions: `proposeAgreement`, `acceptAgreement`.
++class AgreementService {
++  AgreementService({
++    FirebaseFirestore? firestore,
++    FunctionsService? functionsService,
++  })  : _firestore = firestore ?? FirebaseFirestore.instance,
++        _functionsService = functionsService ?? FunctionsService();
++
++  final FirebaseFirestore _firestore;
++  final FunctionsService _functionsService;
++
++  CollectionReference<Map<String, dynamic>> get _agreementsRef =>
++      _firestore.collection('agreements');
++
++  /// Watches all agreements for a given [issueId].
++  ///
++  /// Pass [coupleId] whenever possible. Firestore rules allow reads through
++  /// `coupleId`, so querying only by `issueId` can fail with permission-denied.
++  /// Sorted by createdAt descending on the client to avoid index requirements.
++  Stream<List<Agreement>> watchIssueAgreements(
++    String issueId, {
++    String? coupleId,
++  }) {
++    final trimmedIssueId = issueId.trim();
++    if (trimmedIssueId.isEmpty) {
++      return Stream.value(const <Agreement>[]);
++    }
++
++    Query<Map<String, dynamic>> query = _agreementsRef.where(
++      'issueId',
++      isEqualTo: trimmedIssueId,
++    );
++
++    final trimmedCoupleId = coupleId?.trim();
++    if (trimmedCoupleId != null && trimmedCoupleId.isNotEmpty) {
++      query = query.where('coupleId', isEqualTo: trimmedCoupleId);
++    }
++
++    return query.snapshots().map(_mapAndSortSnapshot);
++  }
++
++  /// Watches all agreements for a given [coupleId].
++  /// Sorted by createdAt descending on the client to avoid index requirements.
++  Stream<List<Agreement>> watchCoupleAgreements(String coupleId) {
++    final trimmedCoupleId = coupleId.trim();
++    if (trimmedCoupleId.isEmpty) {
++      return Stream.value(const <Agreement>[]);
++    }
++
++    return _agreementsRef
++        .where('coupleId', isEqualTo: trimmedCoupleId)
++        .snapshots()
++        .map(_mapAndSortSnapshot);
++  }
++
++  /// Fetches a single agreement by [agreementId].
++  /// Returns null if the document does not exist.
++  Future<Agreement?> getAgreement(String agreementId) async {
++    final trimmed = agreementId.trim();
++    if (trimmed.isEmpty) return null;
++
++    final doc = await _agreementsRef.doc(trimmed).get();
++    if (!doc.exists) return null;
++    return Agreement.fromFirestore(doc);
++  }
++
++  /// Calls the backend `proposeAgreement` Cloud Function.
++  ///
++  /// Backend input:
++  /// - issueId?: string | null
++  /// - title: string
++  /// - description?: string | null
++  /// - checkIntervalDays?: 1 | 3 | 7 | 14 | 30 | null
++  /// - customCheckDate?: ISO string | null
++  ///
++  /// At least one of [checkIntervalDays] or [customCheckDate] is required.
++  /// Returns the new agreementId.
++  Future<String> proposeAgreement({
++    String? issueId,
++    required String title,
++    String? description,
++    int? checkIntervalDays,
++    DateTime? customCheckDate,
++  }) async {
++    final trimmedTitle = title.trim();
++    if (trimmedTitle.isEmpty) {
++      throw const AgreementServiceException('Введите текст договорённости.');
++    }
++
++    if (checkIntervalDays == null && customCheckDate == null) {
++      throw const AgreementServiceException(
++        'Выберите дату проверки договорённости.',
++      );
++    }
++
++    if (checkIntervalDays != null &&
++        !const <int>[1, 3, 7, 14, 30].contains(checkIntervalDays)) {
++      throw const AgreementServiceException(
++        'Недопустимый интервал проверки договорённости.',
++      );
++    }
++
++    final payload = <String, dynamic>{
++      'title': trimmedTitle,
++    };
++
++    final trimmedIssueId = issueId?.trim();
++    if (trimmedIssueId != null && trimmedIssueId.isNotEmpty) {
++      payload['issueId'] = trimmedIssueId;
++    }
++
++    final trimmedDescription = description?.trim();
++    if (trimmedDescription != null && trimmedDescription.isNotEmpty) {
++      payload['description'] = trimmedDescription;
++    }
++
++    if (checkIntervalDays != null) {
++      payload['checkIntervalDays'] = checkIntervalDays;
++    }
++
++    if (customCheckDate != null) {
++      payload['customCheckDate'] = customCheckDate.toIso8601String();
++    }
++
++    try {
++      final data = await _functionsService.call('proposeAgreement', payload);
++      final agreementId = data['agreementId'] ?? data['id'];
++
++      if (agreementId is String && agreementId.isNotEmpty) {
++        return agreementId;
++      }
++
++      throw AgreementServiceException(
++        'Backend returned invalid proposeAgreement response: $data',
++      );
++    } on FunctionsCallException catch (e) {
++      throw AgreementServiceException(e.message, code: e.code, cause: e);
++    } catch (e) {
++      if (e is AgreementServiceException) rethrow;
++      throw AgreementServiceException(
++        'Не удалось предложить договорённость.',
++        cause: e,
++      );
++    }
++  }
++
++  /// Calls the backend `acceptAgreement` Cloud Function.
++  Future<void> acceptAgreement(String agreementId) async {
++    final trimmed = agreementId.trim();
++    if (trimmed.isEmpty) {
++      throw const AgreementServiceException('agreementId is required.');
++    }
++
++    try {
++      await _functionsService.call('acceptAgreement', {
++        'agreementId': trimmed,
++      });
++    } on FunctionsCallException catch (e) {
++      throw AgreementServiceException(e.message, code: e.code, cause: e);
++    } catch (e) {
++      if (e is AgreementServiceException) rethrow;
++      throw AgreementServiceException(
++        'Не удалось принять договорённость.',
++        cause: e,
++      );
++    }
++  }
++
++  List<Agreement> _mapAndSortSnapshot(
++    QuerySnapshot<Map<String, dynamic>> snapshot,
++  ) {
++    final list = snapshot.docs.map(Agreement.fromFirestore).toList();
++    list.sort((a, b) {
++      final aDate = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
++      final bDate = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
++      return bDate.compareTo(aDate);
++    });
++    return list;
++  }
++}
++
++class AgreementServiceException implements Exception {
++  const AgreementServiceException(this.message, {this.code, this.cause});
++
++  final String message;
++  final String? code;
++  final Object? cause;
++
++  @override
++  String toString() {
++    final codePart = code == null ? '' : '[$code] ';
++    return 'AgreementServiceException: $codePart$message';
++  }
++}
