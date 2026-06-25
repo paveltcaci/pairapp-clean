@@ -1,3 +1,5 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../checkins/pending_checkins_section.dart';
@@ -25,6 +27,9 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
   Stream<List<Agreement>>? _agreementsStream;
   String? _agreementsCoupleId;
 
+  /// null = not yet fetched; true = current user is partnerA; false = partnerB.
+  bool? _isPartnerA;
+
   static const List<String> _tabs = ['Ожидают', 'Активные', 'Завершённые'];
 
   @override
@@ -35,9 +40,14 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
 
   List<Agreement> _filtered(List<Agreement> agreements) {
     return switch (_tabIndex) {
+    // "Ожидают" — proposed + accepted_by_one
       0 => agreements.where((a) => a.isPending).toList(),
+    // "Активные" — active + accepted_by_both
       1 => agreements.where((a) => a.isActive || a.isAccepted).toList(),
-      2 => agreements.where((a) => a.isCompleted || a.isFailed).toList(),
+    // "Завершённые" — completed + failed + archived
+      2 => agreements
+          .where((a) => a.isCompleted || a.isFailed || a.status == AgreementStatus.archived)
+          .toList(),
       _ => agreements,
     };
   }
@@ -144,7 +154,7 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
             icon: Icons.hourglass_empty_rounded,
             title: 'Загружаем профиль',
             subtitle:
-                'Если экран не обновится, current user profile stream не отдал данные.',
+            'Если экран не обновится, current user profile stream не отдал данные.',
           );
         }
 
@@ -197,7 +207,7 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
                       icon: Icons.handshake_outlined,
                       title: 'Пока нет договорённостей',
                       subtitle:
-                          'Новые договорённости появятся здесь после создания из чата проблемы.',
+                      'Новые договорённости появятся здесь после создания из чата проблемы.',
                     ),
                   ),
                 ],
@@ -252,14 +262,37 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
     if (_agreementsCoupleId != coupleId) {
       _agreementsCoupleId = coupleId;
       _agreementsStream = _agreementService.watchCoupleAgreements(coupleId);
+      // Fetch couple doc once to determine current user's role.
+      _fetchPartnerRole(coupleId);
     }
     return _agreementsStream!;
   }
 
+  Future<void> _fetchPartnerRole(String coupleId) async {
+    try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) return;
+      final snap = await FirebaseFirestore.instance
+          .collection('couples')
+          .doc(coupleId)
+          .get();
+      if (!mounted) return;
+      final partnerAId = snap.data()?['partnerAId'] as String?;
+      setState(() {
+        _isPartnerA = partnerAId == uid;
+      });
+      debugPrint(
+        'AgreementsScreen _isPartnerA=$_isPartnerA partnerAId=$partnerAId uid=$uid',
+      );
+    } catch (e) {
+      debugPrint('AgreementsScreen _fetchPartnerRole error=$e');
+    }
+  }
+
   Widget _buildAgreementCard(
-    Agreement agreement, {
-    required String currentUserId,
-  }) {
+      Agreement agreement, {
+        required String currentUserId,
+      }) {
     final canAccept = _canAccept(agreement, currentUserId);
     final isAccepting = _acceptingAgreementId == agreement.id;
 
@@ -357,21 +390,21 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
                 child: Center(
                   child: isAccepting
                       ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: AppColors.textMuted,
-                          ),
-                        )
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.textMuted,
+                    ),
+                  )
                       : const Text(
-                          'Принять',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
+                    'Принять',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -410,7 +443,12 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
   }
 
   bool _canAccept(Agreement agreement, String currentUserId) {
-    return agreement.isPending && agreement.proposedBy != currentUserId;
+    if (!agreement.isPending) return false;
+    final isPartnerA = _isPartnerA;
+    if (isPartnerA == null) return false; // role unknown → hide button
+    return isPartnerA
+        ? !agreement.acceptedByPartnerA
+        : !agreement.acceptedByPartnerB;
   }
 
   bool _hasDescription(Agreement agreement) {
@@ -498,6 +536,11 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
       return agreement.isPending
           ? 'Ожидаем подтверждения партнёра'
           : 'Вы предложили';
+    }
+
+    // If current user already confirmed but partner hasn't yet.
+    if (!_canAccept(agreement, currentUserId) && agreement.isPending) {
+      return 'Ожидаем подтверждения партнёра';
     }
 
     return agreement.isPending
