@@ -1,8 +1,15 @@
 import 'package:flutter/material.dart';
 
+import '../create_issue/create_issue_screen.dart';
+import '../../shared/models/agreement.dart';
 import '../../shared/models/app_user.dart';
+import '../../shared/models/checkin.dart';
 import '../../shared/models/couple.dart';
+import '../../shared/models/issue.dart';
+import '../../shared/services/agreement_service.dart';
+import '../../shared/services/checkin_service.dart';
 import '../../shared/services/couple_service.dart';
+import '../../shared/services/issue_service.dart';
 import '../../shared/services/user_service.dart';
 import '../../shared/widgets/app_card.dart';
 import '../../theme/app_colors.dart';
@@ -17,6 +24,9 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final _userService = UserService();
   final _coupleService = CoupleService();
+  final _issueService = IssueService();
+  final _agreementService = AgreementService();
+  final _checkinService = CheckinService();
 
   Stream<_HomeData?> _watchHomeData() {
     return _userService.watchCurrentUserProfile().asyncExpand((currentUser) {
@@ -100,7 +110,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     const SizedBox(height: 32),
                     _buildHeartSection(partner != null),
                     const SizedBox(height: 28),
-                    _buildStatsGrid(context),
+                    _buildDashboardSection(context, data),
                     const SizedBox(height: 24),
                   ],
                 ),
@@ -220,31 +230,198 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildStatsGrid(BuildContext context) {
+  Widget _buildDashboardSection(BuildContext context, _HomeData? data) {
+    final coupleId = data?.couple?.id;
+    if (coupleId == null || coupleId.isEmpty) {
+      return Column(
+        children: [
+          _buildStatsGridFromData(context, _DashboardStats.empty()),
+          const SizedBox(height: 16),
+          _buildCreateIssueButton(context),
+        ],
+      );
+    }
+
+    return StreamBuilder<List<Issue>>(
+      stream: _issueService.watchCoupleIssues(coupleId),
+      builder: (context, issuesSnapshot) {
+        return StreamBuilder<List<Agreement>>(
+          stream: _agreementService.watchCoupleAgreements(coupleId),
+          builder: (context, agreementsSnapshot) {
+            return StreamBuilder<List<Checkin>>(
+              stream: _checkinService.watchCoupleCheckins(coupleId),
+              builder: (context, checkinsSnapshot) {
+                final isLoading =
+                    issuesSnapshot.connectionState == ConnectionState.waiting &&
+                        !issuesSnapshot.hasData;
+
+                if (isLoading) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Center(
+                      child: CircularProgressIndicator(
+                        color: AppColors.purple,
+                      ),
+                    ),
+                  );
+                }
+
+                final hasError = issuesSnapshot.hasError ||
+                    agreementsSnapshot.hasError ||
+                    checkinsSnapshot.hasError;
+                final stats = _DashboardStats.fromData(
+                  issues: issuesSnapshot.data ?? const <Issue>[],
+                  agreements:
+                      agreementsSnapshot.data ?? const <Agreement>[],
+                  checkins: checkinsSnapshot.data ?? const <Checkin>[],
+                );
+
+                return Column(
+                  children: [
+                    if (hasError) ...[
+                      _buildStatsError(),
+                      const SizedBox(height: 12),
+                    ],
+                    _buildStatsGridFromData(context, stats),
+                    const SizedBox(height: 16),
+                    _buildCreateIssueButton(context),
+                  ],
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildStatsGridFromData(
+    BuildContext context,
+    _DashboardStats dashboardStats,
+  ) {
     final stats = [
       _StatItem(
         icon: Icons.warning_amber_rounded,
         iconColor: AppColors.statusOpen,
         label: 'Открытые\nпроблемы',
-        value: '0',
+        value: dashboardStats.openIssues.toString(),
+      ),
+      _StatItem(
+        icon: Icons.handshake_outlined,
+        iconColor: AppColors.lavender,
+        label: 'Активные\nдоговорённости',
+        value: dashboardStats.activeAgreements.toString(),
+      ),
+      _StatItem(
+        icon: Icons.fact_check_outlined,
+        iconColor: AppColors.pinkPurple,
+        label: 'Check-in\nждут',
+        value: dashboardStats.pendingCheckins.toString(),
+      ),
+      _StatItem(
+        icon: Icons.check_circle_outline,
+        iconColor: AppColors.statusResolved,
+        label: 'Решённые\nпроблемы',
+        value: dashboardStats.resolvedIssues.toString(),
+      ),
+    ];
+
+    return GridView.count(
+      crossAxisCount: 2,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      crossAxisSpacing: 12,
+      mainAxisSpacing: 12,
+      childAspectRatio: 1.4,
+      children: stats.map((s) => _buildStatCard(context, s)).toList(),
+    );
+  }
+
+  Widget _buildCreateIssueButton(BuildContext context) {
+    return GestureDetector(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const CreateIssueScreen()),
+      ),
+      child: Container(
+        height: 50,
+        decoration: BoxDecoration(
+          gradient: AppColors.purpleGradient,
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.purple.withValues(alpha: 0.28),
+              blurRadius: 14,
+              offset: const Offset(0, 5),
+            ),
+          ],
+        ),
+        child: const Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.add, color: Colors.white, size: 20),
+            SizedBox(width: 8),
+            Text(
+              'Создать проблему',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatsError() {
+    return AppCard(
+      color: AppColors.bgCardLight,
+      padding: const EdgeInsets.all(14),
+      child: const Row(
+        children: [
+          Icon(Icons.warning_amber_rounded, color: AppColors.statusDiscussion),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Часть данных дашборда не загрузилась.',
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 13,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildStatsGridFallback(BuildContext context) {
+    final stats = [
+      _StatItem(
+        icon: Icons.warning_amber_rounded,
+        iconColor: AppColors.statusOpen,
+        label: 'Открытые\nпроблемы',
+        value: _DashboardStats.empty().openIssues.toString(),
       ),
       _StatItem(
         icon: Icons.handshake_outlined,
         iconColor: AppColors.lavender,
         label: 'Договорён-\nности',
-        value: '0',
+        value: _DashboardStats.empty().activeAgreements.toString(),
       ),
       _StatItem(
         icon: Icons.local_activity_outlined,
         iconColor: AppColors.pinkPurple,
         label: 'Активные\nактивности',
-        value: '0',
+        value: _DashboardStats.empty().pendingCheckins.toString(),
       ),
       _StatItem(
         icon: Icons.chat_bubble_outline,
         iconColor: AppColors.roseAccent,
         label: 'Непрочитан-\nных',
-        value: '0',
+        value: _DashboardStats.empty().resolvedIssues.toString(),
       ),
     ];
 
@@ -312,6 +489,56 @@ class _HomeData {
   final AppUser currentUser;
   final Couple? couple;
   final AppUser? partner;
+}
+
+class _DashboardStats {
+  const _DashboardStats({
+    required this.openIssues,
+    required this.activeAgreements,
+    required this.pendingCheckins,
+    required this.resolvedIssues,
+  });
+
+  final int openIssues;
+  final int activeAgreements;
+  final int pendingCheckins;
+  final int resolvedIssues;
+
+  factory _DashboardStats.empty() {
+    return const _DashboardStats(
+      openIssues: 0,
+      activeAgreements: 0,
+      pendingCheckins: 0,
+      resolvedIssues: 0,
+    );
+  }
+
+  factory _DashboardStats.fromData({
+    required List<Issue> issues,
+    required List<Agreement> agreements,
+    required List<Checkin> checkins,
+  }) {
+    final activeAgreementIds = agreements
+        .where((agreement) => agreement.isActive || agreement.isAccepted)
+        .map((agreement) => agreement.id)
+        .toSet();
+
+    return _DashboardStats(
+      openIssues: issues
+          .where((issue) => !issue.isSolved && !issue.isArchived)
+          .length,
+      activeAgreements: activeAgreementIds.length,
+      pendingCheckins: checkins
+          .where(
+            (checkin) =>
+                checkin.isOpen &&
+                activeAgreementIds.contains(checkin.agreementId),
+          )
+          .length,
+      resolvedIssues:
+          issues.where((issue) => issue.isSolved || issue.isArchived).length,
+    );
+  }
 }
 
 class _StatItem {
