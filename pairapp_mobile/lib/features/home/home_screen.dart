@@ -93,8 +93,8 @@ class _HomeScreenState extends State<HomeScreen> {
         final title = partner != null
             ? '$currentName & $partnerName'
             : currentUser != null
-                ? currentName
-                : 'PairApp';
+            ? currentName
+            : 'PairApp';
 
         return Scaffold(
           body: Container(
@@ -272,7 +272,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 final stats = _DashboardStats.fromData(
                   issues: issuesSnapshot.data ?? const <Issue>[],
                   agreements:
-                      agreementsSnapshot.data ?? const <Agreement>[],
+                  agreementsSnapshot.data ?? const <Agreement>[],
                   checkins: checkinsSnapshot.data ?? const <Checkin>[],
                 );
 
@@ -296,9 +296,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildStatsGridFromData(
-    BuildContext context,
-    _DashboardStats dashboardStats,
-  ) {
+      BuildContext context,
+      _DashboardStats dashboardStats,
+      ) {
     final stats = [
       _StatItem(
         icon: Icons.warning_amber_rounded,
@@ -332,7 +332,7 @@ class _HomeScreenState extends State<HomeScreen> {
       physics: const NeverScrollableScrollPhysics(),
       crossAxisSpacing: 12,
       mainAxisSpacing: 12,
-      childAspectRatio: 1.4,
+      childAspectRatio: 1.25,
       children: stats.map((s) => _buildStatCard(context, s)).toList(),
     );
   }
@@ -524,19 +524,27 @@ class _DashboardStats {
         .toSet();
 
     return _DashboardStats(
+      // "Открытые" = проблемы без активного agreement и без решения.
+      // agreed / solved / archived — не считаются открытыми.
       openIssues: issues
-          .where((issue) => !issue.isSolved && !issue.isArchived)
+          .where(
+            (issue) =>
+        issue.isOpen ||
+            issue.isInDiscussion ||
+            issue.isAgreementProposed ||
+            issue.isReopened,
+      )
           .length,
       activeAgreements: activeAgreementIds.length,
       pendingCheckins: checkins
           .where(
             (checkin) =>
-                checkin.isOpen &&
-                activeAgreementIds.contains(checkin.agreementId),
-          )
+        checkin.isOpen &&
+            activeAgreementIds.contains(checkin.agreementId),
+      )
           .length,
       resolvedIssues:
-          issues.where((issue) => issue.isSolved || issue.isArchived).length,
+      issues.where((issue) => issue.isSolved || issue.isArchived).length,
     );
   }
 }

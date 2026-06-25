@@ -11,7 +11,11 @@ class StatusBadge extends StatelessWidget {
     final (label, color) = switch (status) {
       'open' => ('Открыта', AppColors.statusOpen),
       'discussion' => ('Обсуждение', AppColors.statusDiscussion),
+      'agreement_proposed' => ('Договорённость', AppColors.lavender),
+      'agreed' => ('Согласовано', AppColors.purple),
+      'reopened' => ('Возобновлено', AppColors.statusDiscussion),
       'resolved' => ('Решена', AppColors.statusResolved),
+      'archived' => ('Архив', AppColors.textMuted),
       'active' => ('Активно', AppColors.statusOpen),
       'done' => ('Выполнено', AppColors.statusResolved),
       _ => (status, AppColors.textMuted),

@@ -192,12 +192,12 @@ class _IssuesScreenState extends State<IssuesScreen> {
                 border: selected ? null : Border.all(color: AppColors.bgCardLight),
                 boxShadow: selected
                     ? [
-                        BoxShadow(
-                          color: AppColors.purple.withValues(alpha: 0.3),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
-                        ),
-                      ]
+                  BoxShadow(
+                    color: AppColors.purple.withValues(alpha: 0.3),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ]
                     : null,
               ),
               child: Text(
@@ -314,7 +314,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
               Row(
                 children: List.generate(
                   5,
-                  (index) => Icon(
+                      (index) => Icon(
                     Icons.circle,
                     size: 6,
                     color: index < issue.importanceLevel
@@ -379,12 +379,13 @@ class _IssuesScreenState extends State<IssuesScreen> {
 
   String _statusForBadge(IssueStatus status) {
     return switch (status) {
-      IssueStatus.open || IssueStatus.reopened => 'open',
-      IssueStatus.inDiscussion ||
-      IssueStatus.agreementProposed ||
-      IssueStatus.agreed =>
-        'discussion',
-      IssueStatus.solved || IssueStatus.archived => 'resolved',
+      IssueStatus.open => 'open',
+      IssueStatus.inDiscussion => 'discussion',
+      IssueStatus.agreementProposed => 'agreement_proposed',
+      IssueStatus.agreed => 'agreed',
+      IssueStatus.reopened => 'reopened',
+      IssueStatus.solved => 'resolved',
+      IssueStatus.archived => 'archived',
       IssueStatus.unknown => 'open',
     };
   }
