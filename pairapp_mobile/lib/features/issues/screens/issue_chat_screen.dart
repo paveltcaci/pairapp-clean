@@ -184,6 +184,8 @@ class _IssueChatScreenState extends State<IssueChatScreen>
               backgroundColor: Color(0xFF2D2D3A),
             ),
           );
+          // Refresh the agreements stream so the new agreement appears immediately.
+          _subscribeToIssueStreams();
         },
         onError: (String msg) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -675,13 +677,8 @@ class _IssueChatScreenState extends State<IssueChatScreen>
   Widget _buildAgreementsTab() {
     final stream = _agreementsStream;
     if (stream == null) {
-      return _buildAgreementsMessage(
-        icon: Icons.bug_report_outlined,
-        title: 'DEBUG: agreements stream is null',
-        subtitle:
-            'currentUserId=${_currentUserId ?? 'null'}\n'
-            'coupleId=${_agreementsCoupleId ?? 'null'}\n'
-            'issueId=${widget.issueId}',
+      return const Center(
+        child: CircularProgressIndicator(color: AppColors.purple),
       );
     }
 
@@ -692,19 +689,14 @@ class _IssueChatScreenState extends State<IssueChatScreen>
           return _buildAgreementsMessage(
             icon: Icons.warning_amber_rounded,
             title: 'Не удалось загрузить договорённости',
-            subtitle: _agreementStreamErrorMessage(snapshot.error),
+            subtitle: 'Проверьте подключение и попробуйте позже.',
           );
         }
 
         if (!snapshot.hasData &&
             snapshot.connectionState == ConnectionState.waiting) {
-          return _buildAgreementsMessage(
-            icon: Icons.hourglass_empty_rounded,
-            title: 'Загружаем договорённости',
-            subtitle:
-                'currentUserId=${_currentUserId ?? 'null'}\n'
-                'coupleId=${_agreementsCoupleId ?? 'null'}\n'
-                'issueId=${widget.issueId}',
+          return const Center(
+            child: CircularProgressIndicator(color: AppColors.purple),
           );
         }
 
@@ -712,11 +704,8 @@ class _IssueChatScreenState extends State<IssueChatScreen>
         if (agreements.isEmpty) {
           return _buildAgreementsMessage(
             icon: Icons.handshake_outlined,
-            title: 'Пока нет договорённостей по этой проблеме',
-            subtitle:
-                'currentUserId=${_currentUserId ?? 'null'}\n'
-                'coupleId=${_agreementsCoupleId ?? 'null'}\n'
-                'issueId=${widget.issueId}',
+            title: 'Пока нет договорённостей',
+            subtitle: 'Предложите решение в чате, чтобы создать договорённость.',
           );
         }
 

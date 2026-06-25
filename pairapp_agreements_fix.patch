@@ -1,0 +1,94 @@
+diff --git a/pairapp-backend/firestore/firestore.indexes.json b/pairapp-backend/firestore/firestore.indexes.json
+index ef5e915..a8d8de7 100644
+--- a/pairapp-backend/firestore/firestore.indexes.json
++++ b/pairapp-backend/firestore/firestore.indexes.json
+@@ -88,6 +88,23 @@
+       "fields": [
+         { "fieldPath": "status", "order": "ASCENDING" }
+       ]
++    },
++    {
++      "collectionGroup": "agreements",
++      "queryScope": "COLLECTION",
++      "fields": [
++        { "fieldPath": "coupleId", "order": "ASCENDING" },
++        { "fieldPath": "createdAt", "order": "DESCENDING" }
++      ]
++    },
++    {
++      "collectionGroup": "agreements",
++      "queryScope": "COLLECTION",
++      "fields": [
++        { "fieldPath": "coupleId", "order": "ASCENDING" },
++        { "fieldPath": "issueId", "order": "ASCENDING" },
++        { "fieldPath": "createdAt", "order": "DESCENDING" }
++      ]
+     }
+   ],
+   "fieldOverrides": []
+diff --git a/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart b/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart
+index 56c0576..33c9eeb 100644
+--- a/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart
++++ b/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart
+@@ -184,6 +184,8 @@ class _IssueChatScreenState extends State<IssueChatScreen>
+               backgroundColor: Color(0xFF2D2D3A),
+             ),
+           );
++          // Refresh the agreements stream so the new agreement appears immediately.
++          _subscribeToIssueStreams();
+         },
+         onError: (String msg) {
+           ScaffoldMessenger.of(context).showSnackBar(
+@@ -675,13 +677,8 @@ class _IssueChatScreenState extends State<IssueChatScreen>
+   Widget _buildAgreementsTab() {
+     final stream = _agreementsStream;
+     if (stream == null) {
+-      return _buildAgreementsMessage(
+-        icon: Icons.bug_report_outlined,
+-        title: 'DEBUG: agreements stream is null',
+-        subtitle:
+-            'currentUserId=${_currentUserId ?? 'null'}\n'
+-            'coupleId=${_agreementsCoupleId ?? 'null'}\n'
+-            'issueId=${widget.issueId}',
++      return const Center(
++        child: CircularProgressIndicator(color: AppColors.purple),
+       );
+     }
+ 
+@@ -692,19 +689,14 @@ class _IssueChatScreenState extends State<IssueChatScreen>
+           return _buildAgreementsMessage(
+             icon: Icons.warning_amber_rounded,
+             title: 'Не удалось загрузить договорённости',
+-            subtitle: _agreementStreamErrorMessage(snapshot.error),
++            subtitle: 'Проверьте подключение и попробуйте позже.',
+           );
+         }
+ 
+         if (!snapshot.hasData &&
+             snapshot.connectionState == ConnectionState.waiting) {
+-          return _buildAgreementsMessage(
+-            icon: Icons.hourglass_empty_rounded,
+-            title: 'Загружаем договорённости',
+-            subtitle:
+-                'currentUserId=${_currentUserId ?? 'null'}\n'
+-                'coupleId=${_agreementsCoupleId ?? 'null'}\n'
+-                'issueId=${widget.issueId}',
++          return const Center(
++            child: CircularProgressIndicator(color: AppColors.purple),
+           );
+         }
+ 
+@@ -712,11 +704,8 @@ class _IssueChatScreenState extends State<IssueChatScreen>
+         if (agreements.isEmpty) {
+           return _buildAgreementsMessage(
+             icon: Icons.handshake_outlined,
+-            title: 'Пока нет договорённостей по этой проблеме',
+-            subtitle:
+-                'currentUserId=${_currentUserId ?? 'null'}\n'
+-                'coupleId=${_agreementsCoupleId ?? 'null'}\n'
+-                'issueId=${widget.issueId}',
++            title: 'Пока нет договорённостей',
++            subtitle: 'Предложите решение в чате, чтобы создать договорённость.',
+           );
+         }
+ 
