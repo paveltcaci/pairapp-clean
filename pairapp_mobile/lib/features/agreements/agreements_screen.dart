@@ -21,12 +21,17 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
 
   int _tabIndex = 0;
   String? _acceptingAgreementId;
+  late final Stream<AppUser?> _userStream;
+  Stream<List<Agreement>>? _agreementsStream;
+  String? _agreementsCoupleId;
 
-  static const List<String> _tabs = [
-    'Ожидают',
-    'Активные',
-    'Завершённые',
-  ];
+  static const List<String> _tabs = ['Ожидают', 'Активные', 'Завершённые'];
+
+  @override
+  void initState() {
+    super.initState();
+    _userStream = _userService.watchCurrentUserProfile();
+  }
 
   List<Agreement> _filtered(List<Agreement> agreements) {
     return switch (_tabIndex) {
@@ -62,8 +67,11 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
         children: [
           IconButton(
             onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.arrow_back_ios_new,
-                color: AppColors.textPrimary, size: 18),
+            icon: const Icon(
+              Icons.arrow_back_ios_new,
+              color: AppColors.textPrimary,
+              size: 18,
+            ),
           ),
           Expanded(
             child: Text(
@@ -120,17 +128,23 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
 
   Widget _buildBody() {
     return StreamBuilder<AppUser?>(
-      stream: _userService.watchCurrentUserProfile(),
+      stream: _userStream,
       builder: (context, userSnapshot) {
-        if (userSnapshot.connectionState == ConnectionState.waiting) {
-          return _buildLoading();
-        }
-
         if (userSnapshot.hasError) {
           return _buildMessage(
             icon: Icons.error_outline,
             title: 'Не удалось загрузить профиль',
-            subtitle: 'Попробуйте открыть экран ещё раз.',
+            subtitle: _streamErrorMessage(userSnapshot.error),
+          );
+        }
+
+        if (!userSnapshot.hasData &&
+            userSnapshot.connectionState == ConnectionState.waiting) {
+          return _buildMessage(
+            icon: Icons.hourglass_empty_rounded,
+            title: 'Загружаем профиль',
+            subtitle:
+                'Если экран не обновится, current user profile stream не отдал данные.',
           );
         }
 
@@ -145,23 +159,50 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
         }
 
         return StreamBuilder<List<Agreement>>(
-          stream: _agreementService.watchCoupleAgreements(coupleId),
+          stream: _watchAgreementsFor(coupleId),
           builder: (context, agreementsSnapshot) {
-            if (agreementsSnapshot.connectionState == ConnectionState.waiting) {
-              return _buildLoading();
-            }
-
             if (agreementsSnapshot.hasError) {
               return _buildMessage(
                 icon: Icons.warning_amber_rounded,
                 title: 'Не удалось загрузить договорённости',
-                subtitle: 'Проверьте подключение и попробуйте позже.',
+                subtitle: _streamErrorMessage(agreementsSnapshot.error),
+              );
+            }
+
+            if (!agreementsSnapshot.hasData &&
+                agreementsSnapshot.connectionState == ConnectionState.waiting) {
+              return _buildMessage(
+                icon: Icons.hourglass_empty_rounded,
+                title: 'Загружаем договорённости',
+                subtitle: 'coupleId=$coupleId',
               );
             }
 
             final allAgreements =
                 agreementsSnapshot.data ?? const <Agreement>[];
             final agreements = _filtered(allAgreements);
+
+            if (allAgreements.isEmpty) {
+              return ListView(
+                padding: EdgeInsets.zero,
+                children: [
+                  PendingCheckinsSection(
+                    coupleId: coupleId,
+                    currentUserId: user.id,
+                    agreements: allAgreements,
+                  ),
+                  SizedBox(
+                    height: 360,
+                    child: _buildMessage(
+                      icon: Icons.handshake_outlined,
+                      title: 'Пока нет договорённостей',
+                      subtitle:
+                          'Новые договорённости появятся здесь после создания из чата проблемы.',
+                    ),
+                  ),
+                ],
+              );
+            }
 
             if (agreements.isEmpty) {
               return ListView(
@@ -205,6 +246,14 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
         );
       },
     );
+  }
+
+  Stream<List<Agreement>> _watchAgreementsFor(String coupleId) {
+    if (_agreementsCoupleId != coupleId) {
+      _agreementsCoupleId = coupleId;
+      _agreementsStream = _agreementService.watchCoupleAgreements(coupleId);
+    }
+    return _agreementsStream!;
   }
 
   Widget _buildAgreementCard(
@@ -369,10 +418,11 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
     return description != null && description.isNotEmpty;
   }
 
-  Widget _buildLoading() {
-    return const Center(
-      child: CircularProgressIndicator(color: AppColors.purple),
-    );
+  String _streamErrorMessage(Object? error) {
+    if (error == null) {
+      return 'Проверьте подключение и попробуйте позже.';
+    }
+    return error.toString();
   }
 
   Widget _buildEmptyState() {
@@ -446,7 +496,7 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
   String _subtitle(Agreement agreement, String currentUserId) {
     if (agreement.proposedBy == currentUserId) {
       return agreement.isPending
-          ? 'Вы предложили, ждём партнёра'
+          ? 'Ожидаем подтверждения партнёра'
           : 'Вы предложили';
     }
 
@@ -466,10 +516,10 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
 
   IconData _statusIcon(AgreementStatus status) {
     return switch (status) {
-      AgreementStatus.proposed || AgreementStatus.acceptedByOne =>
-        Icons.hourglass_empty_rounded,
-      AgreementStatus.acceptedByBoth || AgreementStatus.active =>
-        Icons.handshake_outlined,
+      AgreementStatus.proposed ||
+      AgreementStatus.acceptedByOne => Icons.hourglass_empty_rounded,
+      AgreementStatus.acceptedByBoth ||
+      AgreementStatus.active => Icons.handshake_outlined,
       AgreementStatus.completed => Icons.check_circle_outline,
       AgreementStatus.failed => Icons.error_outline_rounded,
       AgreementStatus.archived => Icons.inventory_2_outlined,
@@ -479,14 +529,14 @@ class _AgreementsScreenState extends State<AgreementsScreen> {
 
   Color _statusColor(AgreementStatus status) {
     return switch (status) {
-      AgreementStatus.proposed || AgreementStatus.acceptedByOne =>
-        AppColors.statusDiscussion,
-      AgreementStatus.acceptedByBoth || AgreementStatus.active =>
-        AppColors.purple,
+      AgreementStatus.proposed ||
+      AgreementStatus.acceptedByOne => AppColors.statusDiscussion,
+      AgreementStatus.acceptedByBoth ||
+      AgreementStatus.active => AppColors.purple,
       AgreementStatus.completed => AppColors.statusResolved,
       AgreementStatus.failed => AppColors.roseAccent,
-      AgreementStatus.archived || AgreementStatus.unknown =>
-        AppColors.textMuted,
+      AgreementStatus.archived ||
+      AgreementStatus.unknown => AppColors.textMuted,
     };
   }
 }
@@ -499,14 +549,14 @@ class _AgreementStatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = switch (status) {
-      AgreementStatus.proposed || AgreementStatus.acceptedByOne =>
-        AppColors.statusDiscussion,
-      AgreementStatus.acceptedByBoth || AgreementStatus.active =>
-        AppColors.purple,
+      AgreementStatus.proposed ||
+      AgreementStatus.acceptedByOne => AppColors.statusDiscussion,
+      AgreementStatus.acceptedByBoth ||
+      AgreementStatus.active => AppColors.purple,
       AgreementStatus.completed => AppColors.statusResolved,
       AgreementStatus.failed => AppColors.roseAccent,
-      AgreementStatus.archived || AgreementStatus.unknown =>
-        AppColors.textMuted,
+      AgreementStatus.archived ||
+      AgreementStatus.unknown => AppColors.textMuted,
     };
 
     return Container(

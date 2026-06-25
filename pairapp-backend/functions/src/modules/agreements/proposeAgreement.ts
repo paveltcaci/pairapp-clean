@@ -1,26 +1,20 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, Timestamp } from 'firebase-admin/firestore';
-import { z } from 'zod';
+import { parseOrThrow, proposeAgreementSchema } from '../../utils/validation';
 
 const db = getFirestore();
-
-const schema = z.object({
-  issueId: z.string().optional(),
-  title: z.string().min(3).max(200),
-  description: z.string().max(2000).optional(),
-  checkIntervalDays: z.number().int().min(1).max(90).optional(),
-  customCheckDate: z.string().optional(), // ISO string
-});
 
 export const proposeAgreement = onCall(async (request) => {
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError('unauthenticated', 'Не авторизован');
 
-  const data = schema.parse(request.data);
-
-  if (!data.issueId && !data.customCheckDate && !data.checkIntervalDays) {
-    throw new HttpsError('invalid-argument', 'Нужно указать issueId или дату проверки');
+  const data = parseOrThrow(proposeAgreementSchema, request.data);
+  if (data.title.length < 3) {
+    throw new HttpsError('invalid-argument', 'Название должно быть не короче 3 символов.');
   }
+
+  const issueId = data.issueId?.trim() || null;
+  const description = data.description?.trim() || null;
 
   // Получаем пару пользователя
   const userDoc = await db.collection('users').doc(uid).get();
@@ -39,8 +33,8 @@ export const proposeAgreement = onCall(async (request) => {
 
   // Если есть issueId — проверяем, что проблема существует
   let issueRef: FirebaseFirestore.DocumentReference | null = null;
-  if (data.issueId) {
-    issueRef = db.collection('issues').doc(data.issueId);
+  if (issueId) {
+    issueRef = db.collection('issues').doc(issueId);
     const issueSnap = await issueRef.get();
     if (!issueSnap.exists || issueSnap.data()!.coupleId !== coupleId) {
       throw new HttpsError('not-found', 'Проблема не найдена');
@@ -60,14 +54,14 @@ export const proposeAgreement = onCall(async (request) => {
 
   const agreementData = {
     coupleId,
-    issueId: data.issueId || null,
+    issueId,
     title: data.title,
-    description: data.description || null,
+    description,
     proposedBy: uid,
     acceptedByPartnerA: isPartnerA,
     acceptedByPartnerB: isPartnerB,
     status: (isPartnerA && isPartnerB) ? 'accepted_by_both' : 'accepted_by_one',
-    checkIntervalDays: data.checkIntervalDays || null,
+    checkIntervalDays: data.checkIntervalDays ?? null,
     checkDate,
     createdAt: now,
     updatedAt: now,
@@ -88,7 +82,7 @@ export const proposeAgreement = onCall(async (request) => {
     await db.collection('checkins').add({
       agreementId: agreementRef.id,
       coupleId,
-      issueId: data.issueId || null,
+      issueId,
       scheduledAt: checkDate,
       partnerAAnswer: null,
       partnerBAnswer: null,

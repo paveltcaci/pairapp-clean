@@ -1,10 +1,10 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../theme/app_colors.dart';
 import '../../../shared/models/agreement.dart';
 import '../../../shared/models/issue_message.dart';
-import '../../../shared/models/mock_data.dart';
 import '../../../shared/services/agreement_service.dart';
 import '../../../shared/services/issue_service.dart';
 import '../../../shared/services/user_service.dart';
@@ -36,9 +36,11 @@ class _IssueChatScreenState extends State<IssueChatScreen>
   final AgreementService _agreementService = AgreementService();
   final UserService _userService = UserService();
 
-  late final Stream<List<IssueMessage>> _messagesStream;
+  late Stream<List<IssueMessage>> _messagesStream;
   Stream<List<Agreement>>? _agreementsStream;
+  String? _agreementsCoupleId;
   bool _isSending = false;
+  String? _acceptingAgreementId;
   IssueMessageType _selectedMessageType = IssueMessageType.comment;
 
   String? get _currentUserId => FirebaseAuth.instance.currentUser?.uid;
@@ -47,7 +49,25 @@ class _IssueChatScreenState extends State<IssueChatScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    debugPrint('IssueChatScreen init issueId=${widget.issueId}');
+    _subscribeToIssueStreams();
+  }
+
+  @override
+  void didUpdateWidget(covariant IssueChatScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.issueId != widget.issueId) {
+      debugPrint(
+        'IssueChatScreen issueId changed old=${oldWidget.issueId}, new=${widget.issueId}',
+      );
+      _subscribeToIssueStreams();
+    }
+  }
+
+  void _subscribeToIssueStreams() {
     _messagesStream = _issueService.watchIssueMessages(widget.issueId);
+    _agreementsStream = null;
+    _agreementsCoupleId = null;
     _loadCoupleIdAndSubscribe();
   }
 
@@ -57,7 +77,16 @@ class _IssueChatScreenState extends State<IssueChatScreen>
       if (!mounted) return;
 
       final coupleId = user?.currentCoupleId;
-      if (coupleId == null || coupleId.isEmpty) return;
+      _agreementsCoupleId = coupleId;
+      debugPrint(
+        'IssueChatScreen subscribe agreements currentUserId=$_currentUserId, coupleId=${coupleId ?? 'null'}, issueId=${widget.issueId}',
+      );
+      if (coupleId == null || coupleId.isEmpty) {
+        setState(() {
+          _agreementsStream = Stream.value(const <Agreement>[]);
+        });
+        return;
+      }
 
       setState(() {
         _agreementsStream = _agreementService.watchIssueAgreements(
@@ -70,7 +99,9 @@ class _IssueChatScreenState extends State<IssueChatScreen>
       // If we cannot verify agreements, keep the propose button hidden.
       setState(() {
         _agreementsStream = Stream<List<Agreement>>.error(
-          const AgreementServiceException('Не удалось проверить договорённости'),
+          const AgreementServiceException(
+            'Не удалось проверить договорённости',
+          ),
         );
       });
     }
@@ -135,6 +166,9 @@ class _IssueChatScreenState extends State<IssueChatScreen>
   // ── Propose Agreement ────────────────────────────────────────────────────
 
   void _showProposeAgreementSheet(IssueMessage message) {
+    debugPrint(
+      'IssueChatScreen open propose sheet widgetIssueId=${widget.issueId}, messageId=${message.id}, messageIssueId=${message.issueId}',
+    );
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -153,10 +187,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
         },
         onError: (String msg) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(msg),
-              backgroundColor: Colors.red.shade900,
-            ),
+            SnackBar(content: Text(msg), backgroundColor: Colors.red.shade900),
           );
         },
       ),
@@ -178,10 +209,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
               Expanded(
                 child: TabBarView(
                   controller: _tabController,
-                  children: [
-                    _buildChatTab(),
-                    _buildAgreementsTab(),
-                  ],
+                  children: [_buildChatTab(), _buildAgreementsTab()],
                 ),
               ),
             ],
@@ -198,8 +226,11 @@ class _IssueChatScreenState extends State<IssueChatScreen>
         children: [
           IconButton(
             onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.arrow_back_ios_new,
-                color: AppColors.textPrimary, size: 18),
+            icon: const Icon(
+              Icons.arrow_back_ios_new,
+              color: AppColors.textPrimary,
+              size: 18,
+            ),
           ),
           Expanded(
             child: Column(
@@ -255,13 +286,19 @@ class _IssueChatScreenState extends State<IssueChatScreen>
     return StreamBuilder<List<Agreement>>(
       stream: _agreementsStream,
       builder: (context, agreementSnapshot) {
-        final isAgreementCheckLoading = _agreementsStream == null ||
-            agreementSnapshot.connectionState == ConnectionState.waiting;
+        final isAgreementCheckLoading =
+            _agreementsStream == null ||
+            (!agreementSnapshot.hasError &&
+                !agreementSnapshot.hasData &&
+                agreementSnapshot.connectionState == ConnectionState.waiting);
         final isAgreementCheckFailed = agreementSnapshot.hasError;
-        final hasBlockingAgreement = agreementSnapshot.hasData &&
+        final hasBlockingAgreement =
+            agreementSnapshot.hasData &&
             agreementSnapshot.data!.any(
               (agreement) =>
-                  agreement.isPending || agreement.isAccepted || agreement.isActive,
+                  agreement.isPending ||
+                  agreement.isAccepted ||
+                  agreement.isActive,
             );
 
         return Column(
@@ -315,7 +352,8 @@ class _IssueChatScreenState extends State<IssueChatScreen>
                     controller: _scrollController,
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                     itemCount: messages.length,
-                    separatorBuilder: (context, index) => const SizedBox(height: 8),
+                    separatorBuilder: (context, index) =>
+                        const SizedBox(height: 8),
                     itemBuilder: (context, i) => _buildBubble(
                       messages[i],
                       hasBlockingAgreement: hasBlockingAgreement,
@@ -345,8 +383,9 @@ class _IssueChatScreenState extends State<IssueChatScreen>
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: Column(
-        crossAxisAlignment:
-            isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        crossAxisAlignment: isMe
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
@@ -405,8 +444,8 @@ class _IssueChatScreenState extends State<IssueChatScreen>
                 icon: Icons.check_circle_outline,
                 text: 'Договорённость уже предложена',
               )
-            else
-              _buildProposeButton(message, isMe: isMe),
+            else if (!isMe)
+              _buildProposeButton(message),
           ],
         ],
       ),
@@ -422,18 +461,12 @@ class _IssueChatScreenState extends State<IssueChatScreen>
       decoration: BoxDecoration(
         color: AppColors.textMuted.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: AppColors.textMuted.withValues(alpha: 0.22),
-        ),
+        border: Border.all(color: AppColors.textMuted.withValues(alpha: 0.22)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            icon,
-            size: 12,
-            color: AppColors.textMuted,
-          ),
+          Icon(icon, size: 12, color: AppColors.textMuted),
           const SizedBox(width: 5),
           Text(
             text,
@@ -448,7 +481,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
     );
   }
 
-  Widget _buildProposeButton(IssueMessage message, {required bool isMe}) {
+  Widget _buildProposeButton(IssueMessage message) {
     return GestureDetector(
       onTap: () => _showProposeAgreementSheet(message),
       child: Container(
@@ -543,8 +576,10 @@ class _IssueChatScreenState extends State<IssueChatScreen>
                   style: const TextStyle(color: AppColors.textPrimary),
                   decoration: const InputDecoration(
                     hintText: 'Напишите сообщение...',
-                    contentPadding:
-                        EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
                   ),
                   onSubmitted: (_) => _handleSend(),
                 ),
@@ -574,8 +609,11 @@ class _IssueChatScreenState extends State<IssueChatScreen>
                             strokeWidth: 2,
                           ),
                         )
-                      : const Icon(Icons.send_rounded,
-                          color: Colors.white, size: 18),
+                      : const Icon(
+                          Icons.send_rounded,
+                          color: Colors.white,
+                          size: 18,
+                        ),
                 ),
               ),
             ],
@@ -615,9 +653,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
         duration: const Duration(milliseconds: 150),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: isSelected
-              ? color.withValues(alpha: 0.18)
-              : AppColors.bgCard,
+          color: isSelected ? color.withValues(alpha: 0.18) : AppColors.bgCard,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
             color: isSelected ? color : AppColors.bgCardLight,
@@ -637,33 +673,89 @@ class _IssueChatScreenState extends State<IssueChatScreen>
   }
 
   Widget _buildAgreementsTab() {
-    return ListView.separated(
-      padding: const EdgeInsets.all(20),
-      itemCount: MockData.agreements.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 12),
-      itemBuilder: (context, i) {
-        final a = MockData.agreements[i];
-        return AppCard(
-          child: Row(
+    final stream = _agreementsStream;
+    if (stream == null) {
+      return _buildAgreementsMessage(
+        icon: Icons.bug_report_outlined,
+        title: 'DEBUG: agreements stream is null',
+        subtitle:
+            'currentUserId=${_currentUserId ?? 'null'}\n'
+            'coupleId=${_agreementsCoupleId ?? 'null'}\n'
+            'issueId=${widget.issueId}',
+      );
+    }
+
+    return StreamBuilder<List<Agreement>>(
+      stream: stream,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _buildAgreementsMessage(
+            icon: Icons.warning_amber_rounded,
+            title: 'Не удалось загрузить договорённости',
+            subtitle: _agreementStreamErrorMessage(snapshot.error),
+          );
+        }
+
+        if (!snapshot.hasData &&
+            snapshot.connectionState == ConnectionState.waiting) {
+          return _buildAgreementsMessage(
+            icon: Icons.hourglass_empty_rounded,
+            title: 'Загружаем договорённости',
+            subtitle:
+                'currentUserId=${_currentUserId ?? 'null'}\n'
+                'coupleId=${_agreementsCoupleId ?? 'null'}\n'
+                'issueId=${widget.issueId}',
+          );
+        }
+
+        final agreements = snapshot.data ?? const <Agreement>[];
+        if (agreements.isEmpty) {
+          return _buildAgreementsMessage(
+            icon: Icons.handshake_outlined,
+            title: 'Пока нет договорённостей по этой проблеме',
+            subtitle:
+                'currentUserId=${_currentUserId ?? 'null'}\n'
+                'coupleId=${_agreementsCoupleId ?? 'null'}\n'
+                'issueId=${widget.issueId}',
+          );
+        }
+
+        return ListView.separated(
+          padding: const EdgeInsets.all(20),
+          itemCount: agreements.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 12),
+          itemBuilder: (context, index) =>
+              _buildAgreementCard(agreements[index]),
+        );
+      },
+    );
+  }
+
+  Widget _buildAgreementCard(Agreement agreement) {
+    final currentUserId = _currentUserId;
+    final canAccept =
+        currentUserId != null && _canAcceptAgreement(agreement, currentUserId);
+    final isAccepting = _acceptingAgreementId == agreement.id;
+    final statusColor = _agreementStatusColor(agreement.status);
+
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                width: 36,
-                height: 36,
+                width: 38,
+                height: 38,
                 decoration: BoxDecoration(
-                  color: (a.status == 'active'
-                          ? AppColors.purple
-                          : AppColors.statusResolved)
-                      .withValues(alpha: 0.15),
+                  color: statusColor.withValues(alpha: 0.14),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(
-                  a.status == 'active'
-                      ? Icons.handshake_outlined
-                      : Icons.check_circle_outline,
-                  color: a.status == 'active'
-                      ? AppColors.purple
-                      : AppColors.statusResolved,
-                  size: 18,
+                  _agreementStatusIcon(agreement.status),
+                  color: statusColor,
+                  size: 19,
                 ),
               ),
               const SizedBox(width: 12),
@@ -672,27 +764,289 @@ class _IssueChatScreenState extends State<IssueChatScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      a.title,
+                      agreement.title.isEmpty
+                          ? 'Договорённость без названия'
+                          : agreement.title,
                       style: const TextStyle(
                         fontSize: 14,
-                        fontWeight: FontWeight.w500,
+                        fontWeight: FontWeight.w600,
                         color: AppColors.textPrimary,
                       ),
                     ),
-                    const SizedBox(height: 2),
+                    const SizedBox(height: 4),
                     Text(
-                      'Создал: ${a.createdBy}',
+                      _agreementSubtitle(agreement, currentUserId),
                       style: const TextStyle(
-                          fontSize: 12, color: AppColors.textMuted),
+                        fontSize: 12,
+                        color: AppColors.textMuted,
+                      ),
                     ),
                   ],
                 ),
               ),
-              StatusBadge(status: a.status),
+              const SizedBox(width: 8),
+              _AgreementStatusPill(
+                label: _agreementStatusLabel(agreement.status),
+                color: statusColor,
+              ),
             ],
           ),
-        );
-      },
+          if (_hasAgreementDescription(agreement)) ...[
+            const SizedBox(height: 12),
+            Text(
+              agreement.description!,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppColors.textSecondary,
+                height: 1.35,
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              const Icon(
+                Icons.event_available_outlined,
+                size: 15,
+                color: AppColors.textMuted,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  _agreementCheckDateLabel(agreement),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textMuted,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (canAccept) ...[
+            const SizedBox(height: 14),
+            GestureDetector(
+              onTap: isAccepting ? null : () => _acceptAgreement(agreement.id),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                height: 42,
+                decoration: BoxDecoration(
+                  gradient: isAccepting ? null : AppColors.purpleGradient,
+                  color: isAccepting ? AppColors.bgCardLight : null,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Center(
+                  child: isAccepting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppColors.textMuted,
+                          ),
+                        )
+                      : const Text(
+                          'Принять',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAgreementsMessage({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 36),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 44, color: AppColors.textMuted),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              subtitle,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 13,
+                height: 1.35,
+                color: AppColors.textMuted,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _agreementStreamErrorMessage(Object? error) {
+    if (error == null) {
+      return 'Проверьте подключение и попробуйте позже.';
+    }
+    return error.toString();
+  }
+
+  Future<void> _acceptAgreement(String agreementId) async {
+    if (_acceptingAgreementId != null) return;
+
+    setState(() => _acceptingAgreementId = agreementId);
+
+    try {
+      await _agreementService.acceptAgreement(agreementId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Договорённость принята'),
+          backgroundColor: AppColors.bgCard,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on AgreementServiceException catch (e) {
+      if (!mounted) return;
+      _showAgreementError(e.message);
+    } catch (_) {
+      if (!mounted) return;
+      _showAgreementError('Не удалось принять договорённость.');
+    } finally {
+      if (mounted) {
+        setState(() => _acceptingAgreementId = null);
+      }
+    }
+  }
+
+  void _showAgreementError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red.shade900,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  bool _canAcceptAgreement(Agreement agreement, String currentUserId) {
+    return agreement.isPending && agreement.proposedBy != currentUserId;
+  }
+
+  bool _hasAgreementDescription(Agreement agreement) {
+    final description = agreement.description;
+    return description != null && description.isNotEmpty;
+  }
+
+  String _agreementSubtitle(Agreement agreement, String? currentUserId) {
+    if (currentUserId != null && agreement.proposedBy == currentUserId) {
+      return agreement.isPending
+          ? 'Ожидаем подтверждения партнёра'
+          : 'Вы предложили';
+    }
+
+    if (_isAcceptedByCurrentUser(agreement)) {
+      return 'Ожидаем подтверждения партнёра';
+    }
+
+    return agreement.isPending
+        ? 'Партнёр предложил, ждёт вашего ответа'
+        : 'Предложил партнёр';
+  }
+
+  bool _isAcceptedByCurrentUser(Agreement agreement) {
+    final uid = _currentUserId;
+    if (uid == null) return false;
+    if (agreement.proposedBy == uid) return true;
+    return agreement.isPending && !_canAcceptAgreement(agreement, uid);
+  }
+
+  String _agreementCheckDateLabel(Agreement agreement) {
+    final date = agreement.checkDate;
+    if (date == null) return 'Дата проверки не указана';
+
+    final day = date.day.toString().padLeft(2, '0');
+    final month = date.month.toString().padLeft(2, '0');
+    return 'Проверка: $day.$month.${date.year}';
+  }
+
+  IconData _agreementStatusIcon(AgreementStatus status) {
+    return switch (status) {
+      AgreementStatus.proposed ||
+      AgreementStatus.acceptedByOne => Icons.hourglass_empty_rounded,
+      AgreementStatus.acceptedByBoth ||
+      AgreementStatus.active => Icons.handshake_outlined,
+      AgreementStatus.completed => Icons.check_circle_outline,
+      AgreementStatus.failed => Icons.error_outline_rounded,
+      AgreementStatus.archived => Icons.inventory_2_outlined,
+      AgreementStatus.unknown => Icons.help_outline,
+    };
+  }
+
+  Color _agreementStatusColor(AgreementStatus status) {
+    return switch (status) {
+      AgreementStatus.proposed ||
+      AgreementStatus.acceptedByOne => AppColors.statusDiscussion,
+      AgreementStatus.acceptedByBoth ||
+      AgreementStatus.active => AppColors.purple,
+      AgreementStatus.completed => AppColors.statusResolved,
+      AgreementStatus.failed => AppColors.roseAccent,
+      AgreementStatus.archived ||
+      AgreementStatus.unknown => AppColors.textMuted,
+    };
+  }
+
+  String _agreementStatusLabel(AgreementStatus status) {
+    return switch (status) {
+      AgreementStatus.proposed => 'Предложена',
+      AgreementStatus.acceptedByOne => 'Ожидает',
+      AgreementStatus.acceptedByBoth || AgreementStatus.active => 'Активна',
+      AgreementStatus.completed => 'Выполнена',
+      AgreementStatus.failed => 'Не работает',
+      AgreementStatus.archived => 'Архив',
+      AgreementStatus.unknown => 'Неизвестно',
+    };
+  }
+}
+
+class _AgreementStatusPill extends StatelessWidget {
+  const _AgreementStatusPill({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
     );
   }
 }
@@ -725,15 +1079,21 @@ class _ProposeAgreementSheetState extends State<_ProposeAgreementSheet> {
   bool _isLoading = false;
 
   static const List<int> _intervals = [1, 3, 7, 14, 30];
+  static const int _titlePreviewLength = 60;
 
   @override
   void initState() {
     super.initState();
-    final text = widget.solutionText;
+    final text = widget.solutionText.trim();
+    final description = text.length > AgreementService.descriptionMaxLength
+        ? text.substring(0, AgreementService.descriptionMaxLength).trimRight()
+        : text;
     _titleController = TextEditingController(
-      text: text.length > 60 ? '${text.substring(0, 60)}...' : text,
+      text: text.length > _titlePreviewLength
+          ? '${text.substring(0, _titlePreviewLength)}...'
+          : text,
     );
-    _descController = TextEditingController(text: text);
+    _descController = TextEditingController(text: description);
   }
 
   @override
@@ -749,16 +1109,27 @@ class _ProposeAgreementSheetState extends State<_ProposeAgreementSheet> {
       widget.onError('Введите название договорённости.');
       return;
     }
+    if (title.length < AgreementService.titleMinLength) {
+      widget.onError('Название должно быть не короче 3 символов.');
+      return;
+    }
+
+    final description = _descController.text.trim();
+    if (description.length > AgreementService.descriptionMaxLength) {
+      widget.onError('Описание не должно быть длиннее 2000 символов.');
+      return;
+    }
 
     setState(() => _isLoading = true);
 
     try {
+      debugPrint(
+        'IssueChatScreen submit proposeAgreement issueId=${widget.issueId}, title=$title, checkIntervalDays=$_checkIntervalDays',
+      );
       await widget.agreementService.proposeAgreement(
         issueId: widget.issueId,
         title: title,
-        description: _descController.text.trim().isEmpty
-            ? null
-            : _descController.text.trim(),
+        description: description.isEmpty ? null : description,
         checkIntervalDays: _checkIntervalDays,
       );
 
@@ -823,6 +1194,7 @@ class _ProposeAgreementSheetState extends State<_ProposeAgreementSheet> {
             controller: _titleController,
             hint: 'Краткое название договорённости',
             maxLines: 2,
+            maxLength: AgreementService.titleMaxLength,
           ),
           const SizedBox(height: 14),
 
@@ -833,6 +1205,7 @@ class _ProposeAgreementSheetState extends State<_ProposeAgreementSheet> {
             controller: _descController,
             hint: 'Подробнее о договорённости',
             maxLines: 4,
+            maxLength: AgreementService.descriptionMaxLength,
           ),
           const SizedBox(height: 16),
 
@@ -851,9 +1224,7 @@ class _ProposeAgreementSheetState extends State<_ProposeAgreementSheet> {
                 duration: const Duration(milliseconds: 150),
                 height: 48,
                 decoration: BoxDecoration(
-                  gradient: _isLoading
-                      ? null
-                      : AppColors.purpleGradient,
+                  gradient: _isLoading ? null : AppColors.purpleGradient,
                   color: _isLoading ? const Color(0xFF2D2D3A) : null,
                   borderRadius: BorderRadius.circular(12),
                   boxShadow: _isLoading
@@ -909,19 +1280,21 @@ class _ProposeAgreementSheetState extends State<_ProposeAgreementSheet> {
     required TextEditingController controller,
     required String hint,
     int maxLines = 1,
+    int? maxLength,
   }) {
     return TextField(
       controller: controller,
       enabled: !_isLoading,
       maxLines: maxLines,
-      style: const TextStyle(
-        fontSize: 14,
-        color: AppColors.textPrimary,
-      ),
+      maxLength: maxLength,
+      style: const TextStyle(fontSize: 14, color: AppColors.textPrimary),
       decoration: InputDecoration(
         hintText: hint,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        counterStyle: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 12,
+        ),
       ),
     );
   }
@@ -938,17 +1311,14 @@ class _ProposeAgreementSheetState extends State<_ProposeAgreementSheet> {
               : () => setState(() => _checkIntervalDays = days),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 120),
-            padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
             decoration: BoxDecoration(
               color: isSelected
                   ? AppColors.purple.withValues(alpha: 0.18)
                   : const Color(0xFF2D2D3A),
               borderRadius: BorderRadius.circular(8),
               border: Border.all(
-                color: isSelected
-                    ? AppColors.purple
-                    : const Color(0xFF3D3D50),
+                color: isSelected ? AppColors.purple : const Color(0xFF3D3D50),
                 width: 1,
               ),
             ),
@@ -956,11 +1326,8 @@ class _ProposeAgreementSheetState extends State<_ProposeAgreementSheet> {
               _intervalLabel(days),
               style: TextStyle(
                 fontSize: 13,
-                fontWeight:
-                    isSelected ? FontWeight.w600 : FontWeight.w400,
-                color: isSelected
-                    ? AppColors.purple
-                    : AppColors.textMuted,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                color: isSelected ? AppColors.purple : AppColors.textMuted,
               ),
             ),
           ),

@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/agreement.dart';
 import 'functions_service.dart';
@@ -11,8 +12,12 @@ class AgreementService {
   AgreementService({
     FirebaseFirestore? firestore,
     FunctionsService? functionsService,
-  })  : _firestore = firestore ?? FirebaseFirestore.instance,
-        _functionsService = functionsService ?? FunctionsService();
+  }) : _firestore = firestore ?? FirebaseFirestore.instance,
+       _functionsService = functionsService ?? FunctionsService();
+
+  static const int titleMinLength = 3;
+  static const int titleMaxLength = 200;
+  static const int descriptionMaxLength = 2000;
 
   final FirebaseFirestore _firestore;
   final FunctionsService _functionsService;
@@ -34,17 +39,23 @@ class AgreementService {
       return Stream.value(const <Agreement>[]);
     }
 
-    Query<Map<String, dynamic>> query = _agreementsRef.where(
-      'issueId',
-      isEqualTo: trimmedIssueId,
-    );
-
     final trimmedCoupleId = coupleId?.trim();
     if (trimmedCoupleId != null && trimmedCoupleId.isNotEmpty) {
-      query = query.where('coupleId', isEqualTo: trimmedCoupleId);
+      debugPrint(
+        'watchIssueAgreements coupleId=$trimmedCoupleId, issueId=$trimmedIssueId',
+      );
+      return _agreementsRef
+          .where('coupleId', isEqualTo: trimmedCoupleId)
+          .where('issueId', isEqualTo: trimmedIssueId)
+          .snapshots()
+          .map((snapshot) => _mapAndSortSnapshot(snapshot, label: 'issue'));
     }
 
-    return query.snapshots().map(_mapAndSortSnapshot);
+    debugPrint('watchIssueAgreements coupleId=null, issueId=$trimmedIssueId');
+    return _agreementsRef
+        .where('issueId', isEqualTo: trimmedIssueId)
+        .snapshots()
+        .map((snapshot) => _mapAndSortSnapshot(snapshot, label: 'issue'));
   }
 
   /// Watches all agreements for a given [coupleId].
@@ -55,10 +66,11 @@ class AgreementService {
       return Stream.value(const <Agreement>[]);
     }
 
+    debugPrint('watchCoupleAgreements coupleId=$trimmedCoupleId');
     return _agreementsRef
         .where('coupleId', isEqualTo: trimmedCoupleId)
         .snapshots()
-        .map(_mapAndSortSnapshot);
+        .map((snapshot) => _mapAndSortSnapshot(snapshot, label: 'couple'));
   }
 
   /// Fetches a single agreement by [agreementId].
@@ -94,6 +106,16 @@ class AgreementService {
     if (trimmedTitle.isEmpty) {
       throw const AgreementServiceException('Введите текст договорённости.');
     }
+    if (trimmedTitle.length < titleMinLength) {
+      throw const AgreementServiceException(
+        'Название должно быть не короче 3 символов.',
+      );
+    }
+    if (trimmedTitle.length > titleMaxLength) {
+      throw const AgreementServiceException(
+        'Название не должно быть длиннее 200 символов.',
+      );
+    }
 
     if (checkIntervalDays == null && customCheckDate == null) {
       throw const AgreementServiceException(
@@ -108,9 +130,7 @@ class AgreementService {
       );
     }
 
-    final payload = <String, dynamic>{
-      'title': trimmedTitle,
-    };
+    final payload = <String, dynamic>{'title': trimmedTitle};
 
     final trimmedIssueId = issueId?.trim();
     if (trimmedIssueId != null && trimmedIssueId.isNotEmpty) {
@@ -119,6 +139,11 @@ class AgreementService {
 
     final trimmedDescription = description?.trim();
     if (trimmedDescription != null && trimmedDescription.isNotEmpty) {
+      if (trimmedDescription.length > descriptionMaxLength) {
+        throw const AgreementServiceException(
+          'Описание не должно быть длиннее 2000 символов.',
+        );
+      }
       payload['description'] = trimmedDescription;
     }
 
@@ -129,6 +154,13 @@ class AgreementService {
     if (customCheckDate != null) {
       payload['customCheckDate'] = customCheckDate.toIso8601String();
     }
+
+    debugPrint(
+      'proposeAgreement payload issueId=${payload['issueId'] ?? 'null'}, '
+      'title=${payload['title']}, '
+      'checkIntervalDays=${payload['checkIntervalDays'] ?? 'null'}, '
+      'customCheckDate=${payload['customCheckDate'] ?? 'null'}',
+    );
 
     try {
       final data = await _functionsService.call('proposeAgreement', payload);
@@ -160,9 +192,7 @@ class AgreementService {
     }
 
     try {
-      await _functionsService.call('acceptAgreement', {
-        'agreementId': trimmed,
-      });
+      await _functionsService.call('acceptAgreement', {'agreementId': trimmed});
     } on FunctionsCallException catch (e) {
       throw AgreementServiceException(e.message, code: e.code, cause: e);
     } catch (e) {
@@ -175,8 +205,14 @@ class AgreementService {
   }
 
   List<Agreement> _mapAndSortSnapshot(
-    QuerySnapshot<Map<String, dynamic>> snapshot,
-  ) {
+    QuerySnapshot<Map<String, dynamic>> snapshot, {
+    required String label,
+  }) {
+    debugPrint('watchAgreements[$label] docs count=${snapshot.docs.length}');
+    for (final doc in snapshot.docs) {
+      debugPrint('watchAgreements[$label] doc ${doc.id}: ${doc.data()}');
+    }
+
     final list = snapshot.docs.map(Agreement.fromFirestore).toList();
     list.sort((a, b) {
       final aDate = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
