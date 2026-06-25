@@ -15,62 +15,101 @@ export const acceptAgreement = onCall(async (request) => {
   const { agreementId } = AcceptAgreementSchema.parse(request.data);
 
   const agreementRef = db.collection('agreements').doc(agreementId);
-  const agreementSnap = await agreementRef.get();
+  const result = await db.runTransaction(async (tx) => {
+    const agreementSnap = await tx.get(agreementRef);
 
-  if (!agreementSnap.exists) {
-    throw new HttpsError('not-found', 'Договорённость не найдена');
-  }
+    if (!agreementSnap.exists) {
+      throw new HttpsError('not-found', 'Договорённость не найдена');
+    }
 
-  const agreement = agreementSnap.data()!;
-  const coupleSnap = await db.collection('couples').doc(agreement.coupleId).get();
-  const couple = coupleSnap.data()!;
+    const agreement = agreementSnap.data()!;
+    const coupleRef = db.collection('couples').doc(agreement.coupleId);
+    const coupleSnap = await tx.get(coupleRef);
 
-  const isPartnerA = couple.partnerAId === uid;
-  const isPartnerB = couple.partnerBId === uid;
+    if (!coupleSnap.exists) {
+      throw new HttpsError('not-found', 'Пара не найдена');
+    }
 
-  if (!isPartnerA && !isPartnerB) {
-    throw new HttpsError('permission-denied', 'Вы не состоите в паре');
-  }
+    const couple = coupleSnap.data()!;
 
-  // Определяем, кого принимаем
-  const updateData: any = { updatedAt: Timestamp.now() };
+    const isPartnerA = couple.partnerAId === uid;
+    const isPartnerB = couple.partnerBId === uid;
 
-  if (isPartnerA && !agreement.acceptedByPartnerA) {
-    updateData.acceptedByPartnerA = true;
-  } else if (isPartnerB && !agreement.acceptedByPartnerB) {
-    updateData.acceptedByPartnerB = true;
-  } else {
-    throw new HttpsError('failed-precondition', 'Вы уже приняли эту договорённость');
-  }
+    if (!isPartnerA && !isPartnerB) {
+      throw new HttpsError('permission-denied', 'Вы не состоите в паре');
+    }
 
-  const newAcceptedA = updateData.acceptedByPartnerA ?? agreement.acceptedByPartnerA;
-  const newAcceptedB = updateData.acceptedByPartnerB ?? agreement.acceptedByPartnerB;
+    // Определяем, кого принимаем
+    const updateData: any = { updatedAt: Timestamp.now() };
 
-  if (newAcceptedA && newAcceptedB) {
-    updateData.status = 'active';
-  } else {
-    updateData.status = 'accepted_by_one';
-  }
+    if (isPartnerA && !agreement.acceptedByPartnerA) {
+      updateData.acceptedByPartnerA = true;
+    } else if (isPartnerB && !agreement.acceptedByPartnerB) {
+      updateData.acceptedByPartnerB = true;
+    } else {
+      throw new HttpsError('failed-precondition', 'Вы уже приняли эту договорённость');
+    }
 
-  await agreementRef.update(updateData);
+    const newAcceptedA = updateData.acceptedByPartnerA ?? agreement.acceptedByPartnerA;
+    const newAcceptedB = updateData.acceptedByPartnerB ?? agreement.acceptedByPartnerB;
 
-  // Если оба приняли — создаём check-in (если ещё не создан)
-  if (newAcceptedA && newAcceptedB && agreement.status !== 'active') {
-    const checkDate = agreement.checkDate || Timestamp.now();
-    await createInitialCheckin(agreementId, agreement.coupleId, agreement.issueId, checkDate);
-  }
+    const becameActive = newAcceptedA && newAcceptedB && agreement.status !== 'active';
 
-  return { success: true, status: updateData.status };
+    if (newAcceptedA && newAcceptedB) {
+      updateData.status = 'active';
+    } else {
+      updateData.status = 'accepted_by_one';
+    }
+
+    let checkinId: string | null = null;
+
+    // Если оба приняли — создаём check-in (если ещё не создан)
+    if (becameActive) {
+      const checkDate = agreement.checkDate || Timestamp.now();
+      checkinId = await createInitialCheckin(
+        tx,
+        agreementId,
+        agreement.coupleId,
+        agreement.issueId,
+        checkDate,
+      );
+    }
+
+    tx.update(agreementRef, updateData);
+
+    if (becameActive) {
+      if (agreement.issueId) {
+        tx.update(db.collection('issues').doc(agreement.issueId), {
+          status: 'agreed',
+          updatedAt: Timestamp.now(),
+        });
+      }
+    }
+
+    return {
+      status: updateData.status,
+      becameActive,
+      checkinId,
+    };
+  });
+
+  return {
+    success: true,
+    status: result.status,
+    becameActive: result.becameActive,
+    ...(result.checkinId ? { checkinId: result.checkinId } : {}),
+  };
 });
 
-async function createInitialCheckin(agreementId: string, coupleId: string, issueId: string | null, checkDate: any) {
-  const existing = await db.collection('checkins')
+async function createInitialCheckin(tx: FirebaseFirestore.Transaction, agreementId: string, coupleId: string, issueId: string | null, checkDate: any) {
+  const existing = await tx.get(db.collection('checkins')
     .where('agreementId', '==', agreementId)
-    .where('status', '==', 'pending')
-    .get();
+    .where('status', '==', 'pending'));
 
   if (existing.empty) {
-    await db.collection('checkins').add({
+    const checkinRef = db.collection('checkins').doc();
+    tx.set(checkinRef, {
+      id: checkinRef.id,
       agreementId,
       coupleId,
       issueId,
@@ -84,5 +123,9 @@ async function createInitialCheckin(agreementId: string, coupleId: string, issue
       createdAt: Timestamp.now(),
       completedAt: null,
     });
+
+    return checkinRef.id;
   }
+
+  return existing.docs[0].id;
 }
