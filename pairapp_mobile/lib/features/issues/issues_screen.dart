@@ -132,7 +132,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
         return ListView.separated(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
           itemCount: issues.length,
-          separatorBuilder: (_, __) => const SizedBox(height: 12),
+          separatorBuilder: (_, _) => const SizedBox(height: 12),
           itemBuilder: (context, index) => _buildIssueCard(
             context,
             issues[index],
@@ -177,7 +177,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 20),
         itemCount: _filters.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemBuilder: (context, index) {
           final selected = index == _filterIndex;
           return GestureDetector(

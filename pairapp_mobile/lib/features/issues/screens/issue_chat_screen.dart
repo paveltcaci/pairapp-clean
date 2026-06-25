@@ -1,5 +1,4 @@
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../theme/app_colors.dart';
@@ -38,7 +37,6 @@ class _IssueChatScreenState extends State<IssueChatScreen>
 
   late Stream<List<IssueMessage>> _messagesStream;
   Stream<List<Agreement>>? _agreementsStream;
-  String? _agreementsCoupleId;
   bool _isSending = false;
   String? _acceptingAgreementId;
   IssueMessageType _selectedMessageType = IssueMessageType.comment;
@@ -67,7 +65,6 @@ class _IssueChatScreenState extends State<IssueChatScreen>
   void _subscribeToIssueStreams() {
     _messagesStream = _issueService.watchIssueMessages(widget.issueId);
     _agreementsStream = null;
-    _agreementsCoupleId = null;
     _loadCoupleIdAndSubscribe();
   }
 
@@ -77,7 +74,6 @@ class _IssueChatScreenState extends State<IssueChatScreen>
       if (!mounted) return;
 
       final coupleId = user?.currentCoupleId;
-      _agreementsCoupleId = coupleId;
       debugPrint(
         'IssueChatScreen subscribe agreements currentUserId=$_currentUserId, coupleId=${coupleId ?? 'null'}, issueId=${widget.issueId}',
       );
@@ -637,7 +633,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         itemCount: types.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemBuilder: (context, index) => _buildTypeChip(types[index]),
       ),
     );
@@ -712,7 +708,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
         return ListView.separated(
           padding: const EdgeInsets.all(20),
           itemCount: agreements.length,
-          separatorBuilder: (_, __) => const SizedBox(height: 12),
+          separatorBuilder: (_, _) => const SizedBox(height: 12),
           itemBuilder: (context, index) =>
               _buildAgreementCard(agreements[index]),
         );
@@ -886,13 +882,6 @@ class _IssueChatScreenState extends State<IssueChatScreen>
         ),
       ),
     );
-  }
-
-  String _agreementStreamErrorMessage(Object? error) {
-    if (error == null) {
-      return 'Проверьте подключение и попробуйте позже.';
-    }
-    return error.toString();
   }
 
   Future<void> _acceptAgreement(String agreementId) async {
