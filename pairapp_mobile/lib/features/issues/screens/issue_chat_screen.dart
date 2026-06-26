@@ -42,6 +42,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
 
   // ── Messages stream ──────────────────────────────────────────────────────
   late Stream<List<IssueMessage>> _messagesStream;
+  List<IssueMessage> _lastMessages = const [];
 
   // ── Agreements: one stable subscription, state in widget ─────────────────
   StreamSubscription<List<Agreement>>? _agreementsSubscription;
@@ -83,6 +84,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
       );
       _messagesStream = _issueService.watchIssueMessages(widget.issueId);
       setState(() {
+        _lastMessages = const [];
         _issueAgreements = const [];
         _issueCheckins = const [];
         _agreementsLoading = true;
@@ -500,6 +502,8 @@ class _IssueChatScreenState extends State<IssueChatScreen>
   // Uses _issueAgreements from state (no extra StreamBuilder for agreements).
 
   Widget _buildChatTab() {
+    debugPrint('CHAT_TAB_BUILD');
+
     // Derive button/badge state from in-memory _issueAgreements.
     final hasBlockingAgreement = _issueAgreements.any(
           (a) => a.isPending || a.isAccepted || a.isActive,
@@ -511,13 +515,19 @@ class _IssueChatScreenState extends State<IssueChatScreen>
           child: StreamBuilder<List<IssueMessage>>(
             stream: _messagesStream,
             builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(
-                  child: CircularProgressIndicator(color: AppColors.purple),
-                );
+              if (snapshot.hasData) {
+                _lastMessages = snapshot.data ?? const <IssueMessage>[];
               }
 
+              final messages = snapshot.data ?? _lastMessages;
+
+              debugPrint(
+                'MESSAGES_STREAM_SNAPSHOT connectionState=${snapshot.connectionState}, '
+                'hasData=${snapshot.hasData}, cachedCount=${_lastMessages.length}',
+              );
+
               if (snapshot.hasError) {
+                debugPrint('MESSAGES_STREAM_ERROR error=${snapshot.error}');
                 return const Center(
                   child: Padding(
                     padding: EdgeInsets.all(24),
@@ -530,7 +540,12 @@ class _IssueChatScreenState extends State<IssueChatScreen>
                 );
               }
 
-              final messages = snapshot.data ?? const <IssueMessage>[];
+              if (messages.isEmpty &&
+                  snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(
+                  child: CircularProgressIndicator(color: AppColors.purple),
+                );
+              }
 
               if (messages.isEmpty) {
                 return const Center(
