@@ -1,0 +1,423 @@
+--- a/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart
++++ b/pairapp_mobile/lib/features/issues/screens/issue_chat_screen.dart
+@@ -6,8 +6,10 @@
+ 
+ import '../../../theme/app_colors.dart';
+ import '../../../shared/models/agreement.dart';
++import '../../../shared/models/checkin.dart';
+ import '../../../shared/models/issue_message.dart';
+ import '../../../shared/services/agreement_service.dart';
++import '../../../shared/services/checkin_service.dart';
+ import '../../../shared/services/issue_service.dart';
+ import '../../../shared/services/user_service.dart';
+ import '../../../shared/widgets/app_card.dart';
+@@ -47,6 +49,12 @@
+   bool _agreementsLoading = true;
+   Object? _agreementsError;
+ 
++  // ── Checkins: issue-scoped subscription ───────────────────────────────────
++  StreamSubscription<List<Checkin>>? _checkinsSubscription;
++  List<Checkin> _issueCheckins = const [];
++  String? _submittingCheckinId;
++  String? _cachedCoupleId;
++
+   // ── Partner role (needed for correct "Accept" button logic) ───────────────
+   bool? _isPartnerA;
+ 
+@@ -77,8 +85,10 @@
+       _messagesStream = _issueService.watchIssueMessages(widget.issueId);
+       setState(() {
+         _issueAgreements = const [];
++        _issueCheckins = const [];
+         _agreementsLoading = true;
+         _agreementsError = null;
++        _cachedCoupleId = null;
+       });
+       _initAgreementsSubscription();
+     }
+@@ -87,6 +97,7 @@
+   @override
+   void dispose() {
+     _agreementsSubscription?.cancel();
++    _checkinsSubscription?.cancel();
+     _tabController.dispose();
+     _msgController.dispose();
+     _scrollController.dispose();
+@@ -140,6 +151,7 @@
+       }
+ 
+       // 3. Create ONE subscription; state updates via setState in callbacks.
++      _cachedCoupleId = coupleId;
+       _agreementsSubscription = _agreementService
+           .watchIssueAgreements(widget.issueId, coupleId: coupleId)
+           .listen(
+@@ -163,6 +175,9 @@
+           debugPrint('AGREEMENTS_STATE error=$error');
+         },
+       );
++
++      // 4. Start issue-scoped checkins subscription (filters by issueId client-side).
++      _initCheckinsSubscription(coupleId);
+     } catch (e) {
+       if (!mounted) return;
+       setState(() {
+@@ -173,6 +188,98 @@
+     }
+   }
+ 
++  // ── Checkins subscription setup ───────────────────────────────────────────
++
++  void _initCheckinsSubscription(String coupleId) {
++    _checkinsSubscription?.cancel();
++
++    debugPrint('ISSUE_CHECKINS_STREAM coupleId=$coupleId issueId=${widget.issueId}');
++
++    _checkinsSubscription = CheckinService()
++        .watchCoupleCheckins(coupleId)
++        .listen(
++          (checkins) {
++            if (!mounted) return;
++
++            debugPrint('ISSUE_CHECKINS docs count=${checkins.length}');
++
++            final filtered = checkins.where((c) {
++              final matchesIssue = c.issueId == widget.issueId;
++              final isOpen = c.isOpen;
++              final visible = matchesIssue && isOpen;
++
++              debugPrint(
++                'ISSUE_CHECKIN id=${c.id}, agreementId=${c.agreementId}, '
++                'issueId=${c.issueId}, status=${c.status}, scheduledAt=${c.scheduledAt}',
++              );
++              debugPrint(
++                'ISSUE_CHECKIN visible=$visible reason: '
++                'matchesIssue=$matchesIssue, isOpen=$isOpen',
++              );
++
++              return visible;
++            }).toList();
++
++            setState(() => _issueCheckins = filtered);
++          },
++          onError: (Object error) {
++            debugPrint('ISSUE_CHECKINS_STREAM error=$error');
++          },
++        );
++  }
++
++  // ── Submit checkin answer ─────────────────────────────────────────────────
++
++  Future<void> _submitCheckinAnswer(
++    Checkin checkin,
++    CheckinAnswer answer,
++  ) async {
++    if (_submittingCheckinId != null) return;
++
++    debugPrint(
++      'ISSUE_CHECKIN submit answer=${answer.backendValue} checkinId=${checkin.id}',
++    );
++
++    setState(() => _submittingCheckinId = checkin.id);
++
++    try {
++      await CheckinService().submitCheckinAnswer(
++        checkinId: checkin.id,
++        answer: answer,
++      );
++      if (!mounted) return;
++
++      // Stream will auto-update _issueCheckins; show confirmation snackbar.
++      ScaffoldMessenger.of(context).showSnackBar(
++        const SnackBar(
++          content: Text('Ответ сохранён'),
++          backgroundColor: AppColors.bgCard,
++          behavior: SnackBarBehavior.floating,
++        ),
++      );
++    } on CheckinServiceException catch (e) {
++      if (!mounted) return;
++      ScaffoldMessenger.of(context).showSnackBar(
++        SnackBar(
++          content: Text(e.message),
++          backgroundColor: Colors.red.shade900,
++          behavior: SnackBarBehavior.floating,
++        ),
++      );
++    } catch (_) {
++      if (!mounted) return;
++      ScaffoldMessenger.of(context).showSnackBar(
++        SnackBar(
++          content: Text('Не удалось отправить ответ.'),
++          backgroundColor: Colors.red.shade900,
++          behavior: SnackBarBehavior.floating,
++        ),
++      );
++    } finally {
++      if (mounted) setState(() => _submittingCheckinId = null);
++    }
++  }
++
+   // ── Accept logic ──────────────────────────────────────────────────────────
+ 
+   /// Returns true only when the current user has NOT yet confirmed this
+@@ -636,7 +743,26 @@
+       padding: const EdgeInsets.all(20),
+       itemCount: _issueAgreements.length,
+       separatorBuilder: (_, __) => const SizedBox(height: 12),
+-      itemBuilder: (_, i) => _buildAgreementCard(_issueAgreements[i]),
++      itemBuilder: (_, i) {
++        final agreement = _issueAgreements[i];
++        // Find a pending checkin linked to this agreement.
++        final checkin = _issueCheckins
++            .where((c) => c.agreementId == agreement.id)
++            .firstOrNull;
++        final showCheckin =
++            checkin != null && (agreement.isActive || agreement.isAccepted);
++
++        return Column(
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            _buildAgreementCard(agreement),
++            if (showCheckin) ...[
++              const SizedBox(height: 12),
++              _buildCheckinCard(checkin!),
++            ],
++          ],
++        );
++      },
+     );
+   }
+ 
+@@ -777,6 +903,232 @@
+       ),
+     );
+   }
++
++  // ── Check-in card ─────────────────────────────────────────────────────────
++
++  Widget _buildCheckinCard(Checkin checkin) {
++    final isPartnerA = _isPartnerA;
++    final ownAnswer = isPartnerA == true
++        ? checkin.partnerAAnswer
++        : checkin.partnerBAnswer;
++    final hasAnswered = ownAnswer != null;
++    final isSubmitting = _submittingCheckinId == checkin.id;
++
++    final scheduledAt = checkin.scheduledAt;
++    final isDue = scheduledAt == null || !scheduledAt.isAfter(DateTime.now());
++    final String dateLabel;
++    if (scheduledAt == null) {
++      dateLabel = 'Дата check-in не указана';
++    } else if (isDue) {
++      dateLabel = 'Пора проверить договорённость';
++    } else {
++      final d = scheduledAt.day.toString().padLeft(2, '0');
++      final m = scheduledAt.month.toString().padLeft(2, '0');
++      dateLabel = 'Проверка запланирована: $d.$m.${scheduledAt.year}';
++    }
++
++    return AppCard(
++      color: AppColors.bgCardLight,
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          // Header row
++          Row(
++            children: [
++              Container(
++                width: 36,
++                height: 36,
++                decoration: BoxDecoration(
++                  color: AppColors.statusDiscussion.withValues(alpha: 0.14),
++                  borderRadius: BorderRadius.circular(10),
++                ),
++                child: const Icon(
++                  Icons.fact_check_outlined,
++                  color: AppColors.statusDiscussion,
++                  size: 18,
++                ),
++              ),
++              const SizedBox(width: 12),
++              Expanded(
++                child: Column(
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                    const Text(
++                      'Check-in',
++                      style: TextStyle(
++                        fontSize: 13,
++                        fontWeight: FontWeight.w700,
++                        color: AppColors.textPrimary,
++                      ),
++                    ),
++                    const SizedBox(height: 2),
++                    Text(
++                      hasAnswered
++                          ? 'Ваш ответ сохранён, ждём партнёра'
++                          : 'Работает ли договорённость?',
++                      style: const TextStyle(
++                        fontSize: 11,
++                        color: AppColors.textMuted,
++                      ),
++                    ),
++                  ],
++                ),
++              ),
++              // Status badge
++              Container(
++                padding:
++                    const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
++                decoration: BoxDecoration(
++                  color: AppColors.statusDiscussion.withValues(alpha: 0.15),
++                  borderRadius: BorderRadius.circular(20),
++                  border: Border.all(
++                    color: AppColors.statusDiscussion.withValues(alpha: 0.4),
++                  ),
++                ),
++                child: Text(
++                  checkin.status == CheckinStatus.partial
++                      ? 'Ждём ответ'
++                      : 'Ожидает',
++                  style: const TextStyle(
++                    color: AppColors.statusDiscussion,
++                    fontSize: 11,
++                    fontWeight: FontWeight.w600,
++                  ),
++                ),
++              ),
++            ],
++          ),
++          const SizedBox(height: 10),
++          // Date row — uses checkin.scheduledAt, not agreement.checkDate
++          Row(
++            children: [
++              const Icon(
++                Icons.event_available_outlined,
++                size: 14,
++                color: AppColors.textMuted,
++              ),
++              const SizedBox(width: 6),
++              Expanded(
++                child: Text(
++                  dateLabel,
++                  style: TextStyle(
++                    fontSize: 12,
++                    color: isDue
++                        ? AppColors.statusDiscussion
++                        : AppColors.textMuted,
++                    fontWeight:
++                        isDue ? FontWeight.w600 : FontWeight.w400,
++                  ),
++                ),
++              ),
++            ],
++          ),
++          const SizedBox(height: 14),
++          // Answer area
++          if (hasAnswered)
++            Row(
++              children: [
++                const Icon(
++                  Icons.hourglass_top_rounded,
++                  size: 14,
++                  color: AppColors.textMuted,
++                ),
++                const SizedBox(width: 6),
++                Expanded(
++                  child: Text(
++                    'Ваш ответ принят. Ожидаем партнёра.',
++                    style: const TextStyle(
++                      fontSize: 12,
++                      color: AppColors.textMuted,
++                    ),
++                  ),
++                ),
++              ],
++            )
++          else if (isSubmitting)
++            const SizedBox(
++              height: 38,
++              child: Center(
++                child: SizedBox(
++                  width: 18,
++                  height: 18,
++                  child: CircularProgressIndicator(
++                    strokeWidth: 2,
++                    color: AppColors.purple,
++                  ),
++                ),
++              ),
++            )
++          else
++            Row(
++              children: [
++                Expanded(
++                  child: _buildCheckinAnswerButton(
++                    label: 'Да',
++                    color: AppColors.statusResolved,
++                    onTap: () => _submitCheckinAnswer(
++                      checkin,
++                      CheckinAnswer.yes,
++                    ),
++                  ),
++                ),
++                const SizedBox(width: 8),
++                Expanded(
++                  child: _buildCheckinAnswerButton(
++                    label: 'Частично',
++                    color: AppColors.statusDiscussion,
++                    onTap: () => _submitCheckinAnswer(
++                      checkin,
++                      CheckinAnswer.partially,
++                    ),
++                  ),
++                ),
++                const SizedBox(width: 8),
++                Expanded(
++                  child: _buildCheckinAnswerButton(
++                    label: 'Нет',
++                    color: AppColors.roseAccent,
++                    onTap: () => _submitCheckinAnswer(
++                      checkin,
++                      CheckinAnswer.no,
++                    ),
++                  ),
++                ),
++              ],
++            ),
++        ],
++      ),
++    );
++  }
++
++  Widget _buildCheckinAnswerButton({
++    required String label,
++    required Color color,
++    required VoidCallback onTap,
++  }) {
++    return GestureDetector(
++      onTap: onTap,
++      child: Container(
++        height: 38,
++        alignment: Alignment.center,
++        decoration: BoxDecoration(
++          color: color.withValues(alpha: 0.18),
++          borderRadius: BorderRadius.circular(10),
++          border: Border.all(color: color.withValues(alpha: 0.55)),
++        ),
++        child: Text(
++          label,
++          maxLines: 1,
++          overflow: TextOverflow.ellipsis,
++          style: TextStyle(
++            color: color,
++            fontSize: 12,
++            fontWeight: FontWeight.w700,
++          ),
++        ),
++      ),
++    );
++  }
+ 
+   Widget _buildAgreementsMessage({
+     required IconData icon,

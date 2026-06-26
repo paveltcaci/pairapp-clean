@@ -10,7 +10,21 @@ import '../../shared/services/issue_service.dart';
 import '../../shared/widgets/app_card.dart';
 import '../../theme/app_colors.dart';
 
-class PendingCheckinsSection extends StatefulWidget {
+// ── Public widget ─────────────────────────────────────────────────────────────
+
+/// Displays pending check-ins for a couple.
+///
+/// Converted to StatelessWidget so that every rebuild from the parent
+/// (triggered when the agreements stream emits a new list) causes a full
+/// re-evaluation of activeAgreementIds and the checkins filter.
+///
+/// Previously, as a StatefulWidget, the inner StreamBuilder<List<Checkin>>
+/// cached its last snapshot. When the checkins stream resolved *before* the
+/// agreements stream, activeAgreementIds was an empty Set on first render,
+/// the filter returned no results, and the section was permanently hidden —
+/// because the Firestore stream would not re-emit the same snapshot just
+/// because widget.agreements had changed.
+class PendingCheckinsSection extends StatelessWidget {
   const PendingCheckinsSection({
     super.key,
     required this.coupleId,
@@ -23,10 +37,50 @@ class PendingCheckinsSection extends StatefulWidget {
   final List<Agreement> agreements;
 
   @override
-  State<PendingCheckinsSection> createState() => _PendingCheckinsSectionState();
+  Widget build(BuildContext context) {
+    // Recomputed on every build() call — no stale cache possible.
+    final activeAgreementIds = agreements
+        .where((a) => a.isActive || a.isAccepted)
+        .map((a) => a.id)
+        .toSet();
+
+    debugPrint(
+      'CHECKINS_SECTION agreements count=${agreements.length} '
+      'activeAgreementIds=$activeAgreementIds',
+    );
+
+    return _CheckinsStreamSection(
+      coupleId: coupleId,
+      currentUserId: currentUserId,
+      agreements: agreements,
+      activeAgreementIds: activeAgreementIds,
+    );
+  }
 }
 
-class _PendingCheckinsSectionState extends State<PendingCheckinsSection> {
+// ── Internal stateful section that owns submission state ─────────────────────
+
+/// Stateful only for _submittingCheckinId tracking (UI-only state).
+/// activeAgreementIds is recomputed by the parent StatelessWidget on every
+/// rebuild, so the filter is always fresh.
+class _CheckinsStreamSection extends StatefulWidget {
+  const _CheckinsStreamSection({
+    required this.coupleId,
+    required this.currentUserId,
+    required this.agreements,
+    required this.activeAgreementIds,
+  });
+
+  final String coupleId;
+  final String currentUserId;
+  final List<Agreement> agreements;
+  final Set<String> activeAgreementIds;
+
+  @override
+  State<_CheckinsStreamSection> createState() => _CheckinsStreamSectionState();
+}
+
+class _CheckinsStreamSectionState extends State<_CheckinsStreamSection> {
   final _checkinService = CheckinService();
   final _coupleService = CoupleService();
   final _issueService = IssueService();
@@ -51,6 +105,9 @@ class _PendingCheckinsSectionState extends State<PendingCheckinsSection> {
           stream: _checkinService.watchCoupleCheckins(widget.coupleId),
           builder: (context, checkinsSnapshot) {
             if (checkinsSnapshot.hasError) {
+              debugPrint(
+                'CHECKINS_STREAM error: ${checkinsSnapshot.error}',
+              );
               return _buildInlineError('Не удалось загрузить check-in.');
             }
 
@@ -65,19 +122,38 @@ class _PendingCheckinsSectionState extends State<PendingCheckinsSection> {
               );
             }
 
-            final activeAgreementIds = widget.agreements
-                .where((agreement) => agreement.isActive || agreement.isAccepted)
-                .map((agreement) => agreement.id)
-                .toSet();
-            final checkins = (checkinsSnapshot.data ?? const <Checkin>[])
-                .where(
-                  (checkin) =>
-                      checkin.isOpen &&
-                      activeAgreementIds.contains(checkin.agreementId),
-                )
-                .toList();
+            final allCheckins = checkinsSnapshot.data ?? const <Checkin>[];
 
-            if (checkins.isEmpty) {
+            debugPrint('CHECKINS_STREAM docs count=${allCheckins.length}');
+
+            for (final c in allCheckins) {
+              final isDue = c.scheduledAt != null &&
+                  !c.scheduledAt!.isAfter(DateTime.now());
+              debugPrint(
+                'CHECKIN id=${c.id}, agreementId=${c.agreementId}, '
+                'status=${c.status}, scheduledAt=${c.scheduledAt}, '
+                'now=${DateTime.now()}, isDue=$isDue',
+              );
+            }
+
+            // Filter: open status AND belongs to an active/accepted agreement.
+            // No scheduledAt filter for MVP — show all pending regardless of date.
+            final visibleCheckins = allCheckins.where((checkin) {
+              final isOpen = checkin.isOpen;
+              final isLinked =
+                  widget.activeAgreementIds.contains(checkin.agreementId);
+              final visible = isOpen && isLinked;
+
+              debugPrint(
+                'CHECKIN id=${checkin.id}, visible=$visible '
+                'reason: isOpen=$isOpen, isLinked=$isLinked '
+                'activeAgreementIds=${widget.activeAgreementIds}',
+              );
+
+              return visible;
+            }).toList();
+
+            if (visibleCheckins.isEmpty) {
               return const SizedBox.shrink();
             }
 
@@ -95,7 +171,7 @@ class _PendingCheckinsSectionState extends State<PendingCheckinsSection> {
                     ),
                   ),
                 ),
-                ...checkins.map(
+                ...visibleCheckins.map(
                   (checkin) => Padding(
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
                     child: _CheckinCard(
@@ -119,9 +195,7 @@ class _PendingCheckinsSectionState extends State<PendingCheckinsSection> {
 
   Agreement? _agreementFor(Checkin checkin) {
     for (final agreement in widget.agreements) {
-      if (agreement.id == checkin.agreementId) {
-        return agreement;
-      }
+      if (agreement.id == checkin.agreementId) return agreement;
     }
     return null;
   }
@@ -205,6 +279,8 @@ class _PendingCheckinsSectionState extends State<PendingCheckinsSection> {
     );
   }
 }
+
+// ── Card widget ───────────────────────────────────────────────────────────────
 
 class _CheckinCard extends StatelessWidget {
   const _CheckinCard({
@@ -300,7 +376,6 @@ class _CheckinCard extends StatelessWidget {
                 if (title == null || title.isEmpty) {
                   return const SizedBox.shrink();
                 }
-
                 return _MetaRow(
                   icon: Icons.chat_bubble_outline_rounded,
                   text: 'Проблема: $title',
@@ -309,6 +384,8 @@ class _CheckinCard extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 10),
+          // Uses checkin.scheduledAt — the authoritative date from Firestore,
+          // not agreement.checkDate.
           _MetaRow(
             icon: Icons.event_available_outlined,
             text: _dateLabel(checkin.scheduledAt),
@@ -346,12 +423,13 @@ class _CheckinCard extends StatelessWidget {
 
   String _dateLabel(DateTime? date) {
     if (date == null) return 'Дата check-in не указана';
-
     final day = date.day.toString().padLeft(2, '0');
     final month = date.month.toString().padLeft(2, '0');
     return 'Check-in: $day.$month.${date.year}';
   }
 }
+
+// ── Answer buttons ────────────────────────────────────────────────────────────
 
 class _AnswerButtons extends StatelessWidget {
   const _AnswerButtons({
@@ -457,6 +535,8 @@ class _AnswerButton extends StatelessWidget {
   }
 }
 
+// ── Answered state ────────────────────────────────────────────────────────────
+
 class _AnsweredState extends StatelessWidget {
   const _AnsweredState({required this.answer});
 
@@ -478,6 +558,8 @@ class _AnsweredState extends StatelessWidget {
     };
   }
 }
+
+// ── Shared row ────────────────────────────────────────────────────────────────
 
 class _MetaRow extends StatelessWidget {
   const _MetaRow({
@@ -507,6 +589,8 @@ class _MetaRow extends StatelessWidget {
     );
   }
 }
+
+// ── Status badge ──────────────────────────────────────────────────────────────
 
 class _CheckinStatusBadge extends StatelessWidget {
   const _CheckinStatusBadge({required this.checkin});
