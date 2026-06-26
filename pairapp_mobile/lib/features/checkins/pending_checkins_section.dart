@@ -18,7 +18,7 @@ import '../../theme/app_colors.dart';
 /// (triggered when the agreements stream emits a new list) causes a full
 /// re-evaluation of activeAgreementIds and the checkins filter.
 ///
-/// Previously, as a StatefulWidget, the inner StreamBuilder<List<Checkin>>
+/// Previously, as a StatefulWidget, the inner `StreamBuilder<List<Checkin>>`
 /// cached its last snapshot. When the checkins stream resolved *before* the
 /// agreements stream, activeAgreementIds was an empty Set on first render,
 /// the filter returned no results, and the section was permanently hidden —

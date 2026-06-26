@@ -53,7 +53,6 @@ class _IssueChatScreenState extends State<IssueChatScreen>
   StreamSubscription<List<Checkin>>? _checkinsSubscription;
   List<Checkin> _issueCheckins = const [];
   String? _submittingCheckinId;
-  String? _cachedCoupleId;
 
   // ── Partner role (needed for correct "Accept" button logic) ───────────────
   bool? _isPartnerA;
@@ -88,7 +87,6 @@ class _IssueChatScreenState extends State<IssueChatScreen>
         _issueCheckins = const [];
         _agreementsLoading = true;
         _agreementsError = null;
-        _cachedCoupleId = null;
       });
       _initAgreementsSubscription();
     }
@@ -151,7 +149,6 @@ class _IssueChatScreenState extends State<IssueChatScreen>
       }
 
       // 3. Create ONE subscription; state updates via setState in callbacks.
-      _cachedCoupleId = coupleId;
       _agreementsSubscription = _agreementService
           .watchIssueAgreements(widget.issueId, coupleId: coupleId)
           .listen(
@@ -556,7 +553,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
                 controller: _scrollController,
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                 itemCount: messages.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                separatorBuilder: (_, _) => const SizedBox(height: 8),
                 itemBuilder: (_, i) => _buildBubble(
                   messages[i],
                   hasBlockingAgreement: hasBlockingAgreement,
@@ -614,7 +611,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
                 _buildTypeBadge(message.type, isMe: isMe),
                 const SizedBox(height: 5),
                 Text(
-                  message.text,
+                  _issueMessageDisplayText(message.text),
                   style: TextStyle(
                     fontSize: 14,
                     color: isMe ? Colors.white : AppColors.textPrimary,
@@ -646,6 +643,17 @@ class _IssueChatScreenState extends State<IssueChatScreen>
         ],
       ),
     );
+  }
+
+  String _issueMessageDisplayText(String text) {
+    return switch (text) {
+      'checkin.partial' =>
+        'Проверка частичная. Мы создадим повторную проверку этой договорённости.',
+      'checkin.failed' =>
+        'Договорённость не сработала. Проблема снова открыта для обсуждения.',
+      'checkin.success' => 'Договорённость выполнена. Проблема решена.',
+      _ => text,
+    };
   }
 
   Widget _buildAgreementStateBadge({
@@ -742,7 +750,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
     return ListView.separated(
       padding: const EdgeInsets.all(20),
       itemCount: _issueAgreements.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 12),
+      separatorBuilder: (_, _) => const SizedBox(height: 12),
       itemBuilder: (_, i) {
         final agreement = _issueAgreements[i];
         // Find a pending checkin linked to this agreement.
@@ -758,7 +766,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
             _buildAgreementCard(agreement),
             if (showCheckin) ...[
               const SizedBox(height: 12),
-              _buildCheckinCard(checkin!),
+              _buildCheckinCard(checkin),
             ],
           ],
         );
@@ -1322,7 +1330,7 @@ class _IssueChatScreenState extends State<IssueChatScreen>
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         itemCount: types.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemBuilder: (_, i) => _buildTypeChip(types[i]),
       ),
     );

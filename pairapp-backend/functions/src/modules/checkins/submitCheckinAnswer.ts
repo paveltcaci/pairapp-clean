@@ -7,6 +7,7 @@ import { getActiveCoupleOrThrow, resolvePartner } from "../../utils/couple-conte
 import { Errors } from "../../utils/errors";
 import { sendPushToUser } from "../../utils/push";
 import {
+  AgreementDoc,
   CheckinDoc,
   IssueMessageDoc,
   SubmitCheckinAnswerInput,
@@ -79,9 +80,30 @@ export const submitCheckinAnswer = onCall<SubmitCheckinAnswerInput>(
       patch.status = "completed";
       patch.result = result;
       patch.completedAt = now;
-      tx.update(checkinRef, patch);
 
       const agreementRef = db.collection(Collections.agreements).doc(checkin.agreementId);
+      let agreement: AgreementDoc | null = null;
+      let hasOtherPendingCheckin = false;
+
+      if (result === "partial") {
+        const agreementSnap = await tx.get(agreementRef);
+        if (!agreementSnap.exists) {
+          throw Errors.notFound("Agreement");
+        }
+        agreement = agreementSnap.data() as AgreementDoc;
+
+        const pendingCheckinsSnap = await tx.get(
+          db
+            .collection(Collections.checkins)
+            .where("agreementId", "==", checkin.agreementId)
+            .where("status", "==", "pending")
+        );
+        hasOtherPendingCheckin = pendingCheckinsSnap.docs.some(
+          (doc) => doc.id !== input.checkinId
+        );
+      }
+
+      tx.update(checkinRef, patch);
 
       let issueRef: FirebaseFirestore.DocumentReference | null = null;
       if (checkin.issueId) {
@@ -127,6 +149,35 @@ export const submitCheckinAnswer = onCall<SubmitCheckinAnswerInput>(
             readByPartner: false,
           };
           tx.set(messageRef, messageDoc);
+        }
+
+        if (agreement && !hasOtherPendingCheckin) {
+          const intervalDays =
+            typeof agreement.checkIntervalDays === "number" &&
+            agreement.checkIntervalDays > 0
+              ? agreement.checkIntervalDays
+              : 7;
+          const nextScheduledAt = Timestamp.fromMillis(
+            now.toMillis() + intervalDays * 24 * 60 * 60 * 1000
+          );
+          const nextCheckinRef = db.collection(Collections.checkins).doc();
+          const nextCheckinDoc: CheckinDoc = {
+            id: nextCheckinRef.id,
+            agreementId: checkin.agreementId,
+            issueId: checkin.issueId ?? null,
+            coupleId: checkin.coupleId,
+            scheduledAt: nextScheduledAt,
+            partnerAAnswer: null,
+            partnerBAnswer: null,
+            partnerAAnsweredAt: null,
+            partnerBAnsweredAt: null,
+            status: "pending",
+            result: null,
+            createdAt: now,
+            completedAt: null,
+            notifiedAt: null,
+          };
+          tx.set(nextCheckinRef, nextCheckinDoc);
         }
       } else {
         // "Один «Нет» → Проблема → reopened, создаётся системное сообщение"
