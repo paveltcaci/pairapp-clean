@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../../shared/models/app_user.dart';
+import '../../shared/models/couple.dart';
 import '../../shared/services/auth_service.dart';
 import '../../shared/services/couple_service.dart';
 import '../../shared/services/user_service.dart';
 import '../../shared/widgets/app_card.dart';
 import '../../theme/app_colors.dart';
+import 'couple_settings_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -28,13 +30,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final coupleId = currentUser.currentCoupleId;
       if (coupleId == null || coupleId.isEmpty) {
         return Stream<_ProfileData?>.value(
-          _ProfileData(currentUser: currentUser, partner: null),
+          _ProfileData(currentUser: currentUser, partner: null, couple: null),
         );
       }
 
       return _coupleService.watchCouple(coupleId).asyncMap((couple) async {
         if (couple == null) {
-          return _ProfileData(currentUser: currentUser, partner: null);
+          return _ProfileData(currentUser: currentUser, partner: null, couple: null);
         }
 
         final partnerId = couple.partnerAId == currentUser.id
@@ -46,7 +48,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           partner = await _userService.getUserProfile(partnerId);
         }
 
-        return _ProfileData(currentUser: currentUser, partner: partner);
+        return _ProfileData(currentUser: currentUser, partner: partner, couple: couple);
       });
     });
   }
@@ -69,6 +71,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
         final currentUser = snapshot.data?.currentUser;
         final partner = snapshot.data?.partner;
+        final couple = snapshot.data?.couple;
 
         return Scaffold(
           body: Container(
@@ -83,7 +86,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     const SizedBox(height: 28),
                     _buildAvatar(context, currentUser, partner),
                     const SizedBox(height: 24),
-                    _buildMenuItems(context, currentUser),
+                    _buildMenuItems(context, currentUser, couple),
                     const SizedBox(height: 20),
                     _buildLeaveCoupleButton(context),
                     const SizedBox(height: 12),
@@ -147,7 +150,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 Text(
                   'Изменить',
                   style:
-                      TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                  TextStyle(fontSize: 13, color: AppColors.textSecondary),
                 ),
               ],
             ),
@@ -158,10 +161,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _buildAvatar(
-    BuildContext context,
-    AppUser? currentUser,
-    AppUser? partner,
-  ) {
+      BuildContext context,
+      AppUser? currentUser,
+      AppUser? partner,
+      ) {
     return Column(
       children: [
         Stack(
@@ -243,7 +246,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Widget _buildMenuItems(BuildContext context, AppUser? currentUser) {
+  Widget _buildMenuItems(BuildContext context, AppUser? currentUser, Couple? couple) {
     final language = currentUser?.language == 'en' ? 'English' : 'Русский';
     final items = [
       _MenuItem(
@@ -265,11 +268,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
         children: items.asMap().entries.map((entry) {
           final i = entry.key;
           final item = entry.value;
+
+          VoidCallback? tap;
+          if (item.label == 'Настройки пары') {
+            tap = () {
+              if (couple == null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Сначала создайте пару'),
+                    backgroundColor: AppColors.bgCardLight,
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              } else {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => CoupleSettingsScreen(
+                      initialCouple: couple,
+                      currentUserId: currentUser!.id,
+                    ),
+                  ),
+                );
+              }
+            };
+          }
           return Column(
             children: [
               ListTile(
                 contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                 leading: Container(
                   width: 36,
                   height: 36,
@@ -290,16 +318,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
                 trailing: item.hasArrow
                     ? const Icon(Icons.arrow_forward_ios,
-                        size: 14, color: AppColors.textMuted)
+                    size: 14, color: AppColors.textMuted)
                     : item.value != null
-                        ? Text(
-                            item.value!,
-                            style: const TextStyle(
-                                fontSize: 13,
-                                color: AppColors.textMuted),
-                          )
-                        : null,
-                onTap: () {},
+                    ? Text(
+                  item.value!,
+                  style: const TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textMuted),
+                )
+                    : null,
+                onTap: tap ?? () {},
               ),
               if (i < items.length - 1)
                 const Divider(
@@ -350,7 +378,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           builder: (_) => AlertDialog(
             backgroundColor: AppColors.bgCard,
             shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
             title: const Text('Выйти из аккаунта?',
                 style: TextStyle(color: AppColors.textPrimary)),
             content: const Text(
@@ -405,10 +433,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
 }
 
 class _ProfileData {
-  const _ProfileData({required this.currentUser, required this.partner});
+  const _ProfileData({
+    required this.currentUser,
+    required this.partner,
+    required this.couple,
+  });
 
   final AppUser currentUser;
   final AppUser? partner;
+  final Couple? couple;
 }
 
 class _MenuItem {
