@@ -199,3 +199,23 @@ A task is done only when:
 * possible risks are mentioned;
 * test/check commands are provided;
 * the user can manually review before commit/push.
+
+## Command working directories
+
+The repository root is:
+
+`F:\LOVEAPP\app1.0`
+
+Do not run Flutter commands from the repository root.
+
+Flutter commands must be run from:
+
+`F:\LOVEAPP\app1.0\pairapp_mobile`
+
+Correct Flutter command sequence on Windows PowerShell:
+
+```powershell
+Set-Location F:\LOVEAPP\app1.0\pairapp_mobile
+flutter pub get
+flutter analyze
+flutter test
