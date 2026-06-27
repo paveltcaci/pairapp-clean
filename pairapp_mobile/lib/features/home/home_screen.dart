@@ -6,10 +6,12 @@ import '../../shared/models/app_user.dart';
 import '../../shared/models/checkin.dart';
 import '../../shared/models/couple.dart';
 import '../../shared/models/issue.dart';
+import '../../shared/models/relationship_counter.dart';
 import '../../shared/services/agreement_service.dart';
 import '../../shared/services/checkin_service.dart';
 import '../../shared/services/couple_service.dart';
 import '../../shared/services/issue_service.dart';
+import '../../shared/services/relationship_service.dart';
 import '../../shared/services/user_service.dart';
 import '../../shared/widgets/app_card.dart';
 import '../../theme/app_colors.dart';
@@ -27,6 +29,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final _issueService = IssueService();
   final _agreementService = AgreementService();
   final _checkinService = CheckinService();
+  final _relationshipService = RelationshipService();
 
   Stream<_HomeData?> _watchHomeData() {
     return _userService.watchCurrentUserProfile().asyncExpand((currentUser) {
@@ -109,7 +112,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     _buildHeader(context, title),
                     const SizedBox(height: 32),
                     _buildHeartSection(partner != null),
-                    const SizedBox(height: 28),
+                    const SizedBox(height: 16),
+                    _buildRelationshipCounter(context, data),
+                    const SizedBox(height: 20),
                     _buildDashboardSection(context, data),
                     const SizedBox(height: 24),
                   ],
@@ -229,6 +234,330 @@ class _HomeScreenState extends State<HomeScreen> {
       ],
     );
   }
+
+  // ── Relationship Counter ──────────────────────────────────────────────────
+
+  Widget _buildRelationshipCounter(BuildContext context, _HomeData? data) {
+    final couple = data?.couple;
+    final currentUser = data?.currentUser;
+
+    // No couple yet — nothing to show.
+    if (couple == null) return const SizedBox.shrink();
+
+    final startDate = couple.relationshipStartDate;
+
+    // No date set → CTA card.
+    if (startDate == null) {
+      return _buildRelationshipCta(context);
+    }
+
+    // Date set → show counter.
+    final breakdown = RelationshipBreakdown.compute(startDate);
+
+    // Determine confirmation status for the current user.
+    final bool selfIsA = couple.partnerAId == currentUser?.id;
+    final bool selfConfirmed =
+    selfIsA ? couple.relationshipStartConfirmedByA : couple.relationshipStartConfirmedByB;
+    final bool fullyConfirmed = couple.isDateFullyConfirmed;
+
+    return _buildRelationshipCard(
+      context,
+      breakdown: breakdown,
+      fullyConfirmed: fullyConfirmed,
+      selfConfirmed: selfConfirmed,
+    );
+  }
+
+  /// CTA shown when no date has been set yet.
+  Widget _buildRelationshipCta(BuildContext context) {
+    return AppCard(
+      onTap: () => _pickAndSetDate(context),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              gradient: AppColors.purpleGradient,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.favorite_border,
+                color: Colors.white, size: 20),
+          ),
+          const SizedBox(width: 14),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Укажите дату начала отношений',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'Мы посчитаем, сколько вы вместе ♥',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Icon(Icons.chevron_right,
+              color: AppColors.textMuted, size: 20),
+        ],
+      ),
+    );
+  }
+
+  /// Counter card shown when a date is set.
+  Widget _buildRelationshipCard(
+      BuildContext context, {
+        required RelationshipBreakdown breakdown,
+        required bool fullyConfirmed,
+        required bool selfConfirmed,
+      }) {
+    return AppCard(
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header row
+          Row(
+            children: [
+              ShaderMask(
+                shaderCallback: (b) =>
+                    AppColors.purpleGradient.createShader(b),
+                child: const Icon(Icons.favorite,
+                    color: Colors.white, size: 18),
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                'Мы вместе',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textSecondary,
+                  letterSpacing: 0.4,
+                ),
+              ),
+              const Spacer(),
+              // Edit date button
+              GestureDetector(
+                onTap: () => _pickAndSetDate(context),
+                child: Container(
+                  padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.purple.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'Изменить',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: AppColors.lavender,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // Main counter
+          Text(
+            breakdown.durationLabel,
+            style: const TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.bold,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Всего ${_pluralDays(breakdown.totalDays)} вместе',
+            style: const TextStyle(
+              fontSize: 13,
+              color: AppColors.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 12),
+          // Anniversary row
+          Container(
+            padding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.purple.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: AppColors.purple.withValues(alpha: 0.18)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.cake_outlined,
+                    size: 14, color: AppColors.lavender),
+                const SizedBox(width: 8),
+                Text(
+                  breakdown.daysUntilAnniversary == 0
+                      ? 'Сегодня годовщина! 🎉'
+                      : 'До годовщины: ${_pluralDays(breakdown.daysUntilAnniversary)}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.lavender,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Confirmation status
+          if (!fullyConfirmed) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Icon(Icons.hourglass_top_rounded,
+                    size: 13, color: AppColors.textMuted),
+                const SizedBox(width: 6),
+                const Expanded(
+                  child: Text(
+                    'Ожидаем подтверждения партнёра',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textMuted,
+                    ),
+                  ),
+                ),
+                if (!selfConfirmed)
+                  GestureDetector(
+                    onTap: () => _confirmDate(context),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 5),
+                      decoration: BoxDecoration(
+                        gradient: AppColors.purpleGradient,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        'Подтвердить',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+
+  Future<void> _pickAndSetDate(BuildContext context) async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: now,
+      firstDate: DateTime(1970),
+      lastDate: now,
+      helpText: 'Дата начала отношений',
+      builder: (ctx, child) => Theme(
+        data: Theme.of(ctx).copyWith(
+          colorScheme: const ColorScheme.dark(
+            primary: AppColors.purple,
+            onPrimary: Colors.white,
+            surface: AppColors.bgCard,
+            onSurface: AppColors.textPrimary,
+          ),
+          dialogBackgroundColor: AppColors.bgSurface,
+        ),
+        child: child!,
+      ),
+    );
+
+    if (picked == null) return;
+    if (!context.mounted) return;
+
+    try {
+      await _relationshipService.updateStartDate(picked);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Дата сохранена ✓'),
+            backgroundColor: AppColors.purple,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка: ${_friendlyError(e)}'),
+            backgroundColor: AppColors.roseAccent,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _confirmDate(BuildContext context) async {
+    try {
+      await _relationshipService.confirmStartDate();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Дата подтверждена ✓'),
+            backgroundColor: AppColors.purple,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ошибка: ${_friendlyError(e)}'),
+            backgroundColor: AppColors.roseAccent,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  static String _friendlyError(Object e) {
+    final msg = e.toString();
+    if (msg.contains('failed-precondition')) {
+      return 'Дата не установлена или условие не выполнено';
+    }
+    if (msg.contains('unauthenticated')) return 'Необходима авторизация';
+    if (msg.contains('not-found')) return 'Пара не найдена';
+    return 'Попробуйте ещё раз';
+  }
+
+  static String _pluralDays(int n) {
+    final mod10 = n % 10;
+    final mod100 = n % 100;
+    if (mod10 == 1 && mod100 != 11) return '$n день';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) {
+      return '$n дня';
+    }
+    return '$n дней';
+  }
+
+  // ── Dashboard ─────────────────────────────────────────────────────────────
 
   Widget _buildDashboardSection(BuildContext context, _HomeData? data) {
     final coupleId = data?.couple?.id;
