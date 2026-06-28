@@ -5,6 +5,7 @@ import '../../shared/services/activity_service.dart';
 import '../../shared/services/user_service.dart';
 import '../../shared/widgets/app_card.dart';
 import '../../theme/app_colors.dart';
+import '../chores/chore_randomizer_screen.dart';
 import '../randomizer/randomizer_screen.dart';
 
 class ActivitiesScreen extends StatefulWidget {
@@ -121,13 +122,16 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
       _ActivityCardData(
         icon: Icons.home_outlined,
         title: 'Бытовой рандомайзер',
-        subtitle: 'Кто что делает сегодня дома',
+        subtitle: 'Добавляйте бытовые задачи и честно решайте, кому они выпадут',
         gradient: const LinearGradient(
           colors: [Color(0xFF5C6BC0), Color(0xFF7986CB)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        onTap: () {},
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const ChoreRandomizerScreen()),
+        ),
       ),
       _ActivityCardData(
         icon: Icons.quiz_outlined,

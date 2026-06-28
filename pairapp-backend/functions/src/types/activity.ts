@@ -71,6 +71,14 @@ export interface ChoreTaskDoc {
   coupleId: string;
   title: string;
   description: string | null;
+  /** Emoji-иконка задачи. Default "🧹". */
+  emoji?: string;
+  /** Категория задачи (кухня, уборка, покупки и т.д.). Default "другое". */
+  category?: string;
+  /** Сложность/неприятность задачи. */
+  intensity?: "easy" | "medium" | "annoying";
+  /** Примерное время выполнения в минутах. null если не указано. */
+  estimatedMinutes?: number | null;
   createdBy: string;
   isActive: boolean;
   createdAt: FirestoreTimestamp;
@@ -80,9 +88,17 @@ export interface ChoreTaskDoc {
 export interface CreateChoreTaskInput {
   title: string;
   description?: string | null;
+  emoji?: string;
+  category?: string;
+  intensity?: "easy" | "medium" | "annoying";
+  estimatedMinutes?: number | null;
 }
 
 export interface SpinChoreInput {
+  choreTaskId: string;
+}
+
+export interface SoftDeleteChoreTaskInput {
   choreTaskId: string;
 }
 
@@ -97,6 +113,12 @@ export interface ChoreSpinDoc {
   partnerARecentCount: number;
   partnerBRecentCount: number;
   spunAt: FirestoreTimestamp;
+  /** Снапшот названия задачи на момент спина (для истории). */
+  titleSnapshot?: string;
+  /** Снапшот emoji задачи на момент спина (для истории). */
+  emojiSnapshot?: string;
+  /** Снапшот категории задачи на момент спина (для истории). */
+  categorySnapshot?: string;
 }
 
 /**

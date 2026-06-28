@@ -119,9 +119,17 @@ export const spinActivitySchema = z.object({
 export const createChoreTaskSchema = z.object({
   title: z.string().trim().min(1).max(120),
   description: z.string().trim().max(1000).nullish(),
+  emoji: z.string().trim().max(8).optional(),
+  category: z.string().trim().max(60).optional(),
+  intensity: z.enum(["easy", "medium", "annoying"]).optional(),
+  estimatedMinutes: z.number().int().min(1).max(480).nullish(),
 });
 
 export const spinChoreSchema = z.object({
+  choreTaskId: z.string().min(1),
+});
+
+export const softDeleteChoreTaskSchema = z.object({
   choreTaskId: z.string().min(1),
 });
 
