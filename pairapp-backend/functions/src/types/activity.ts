@@ -33,13 +33,34 @@ export interface SpinActivityInput {
 
 /**
  * Коллекция `activity_history` (раздел 17.8 ТЗ).
+ *
+ * Обратная совместимость: записи от acceptActivity имеют
+ * source = undefined, localIdeaId = undefined, chosenBy = string.
+ * Записи от saveActivityIdeaSnapshot имеют source = "local_builtin",
+ * localIdeaId = string, chosenBy = null.
  */
 export interface ActivityHistoryDoc {
   id: string;
   coupleId: string;
-  activityId: string;
-  chosenBy: string;
-  chosenAt: FirestoreTimestamp;
+  // ── Поля от acceptActivity (старые записи) ──
+  activityId: string | null;
+  chosenBy: string | null;
+  chosenAt: FirestoreTimestamp | null;
+  // ── Поля от saveActivityIdeaSnapshot (новые записи) ──
+  source?: "local_builtin";
+  localIdeaId?: string;
+  title?: string;
+  description?: string;
+  emoji?: string;
+  categories?: string[];
+  durationMinutes?: number | null;
+  budgetLevel?: BudgetLevel;
+  locationType?: string;
+  vibe?: string;
+  preparation?: string | null;
+  savedBy?: string;
+  savedAt?: FirestoreTimestamp;
+  createdAt?: FirestoreTimestamp;
 }
 
 /**

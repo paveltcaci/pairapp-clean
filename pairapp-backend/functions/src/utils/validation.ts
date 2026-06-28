@@ -161,6 +161,23 @@ export const removeFcmTokenSchema = z.object({
   fcmToken: z.string().min(1),
 });
 
+export const saveActivityIdeaSnapshotSchema = z.object({
+  localIdeaId: z.string().trim().min(1).max(60),
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().min(1).max(1000),
+  emoji: z.string().trim().min(1).max(10),
+  categories: z.array(z.string().trim().min(1).max(60)).min(1).max(10),
+  durationMinutes: z.number().int().positive().nullish(),
+  budgetLevel: z.enum(["free", "low", "medium"]),
+  locationType: z.enum(["home", "outside", "any"]),
+  vibe: z.enum(["calm", "fun", "romantic", "deep", "spontaneous", "cozy"]),
+  preparation: z.string().trim().max(500).nullish(),
+});
+
+export const removeSavedActivityIdeaSchema = z.object({
+  historyId: z.string().trim().min(1),
+});
+
 /**
  * Прогоняет данные через Zod-схему и конвертирует ошибку валидации
  * в стандартный HttpsError('invalid-argument', ...).
