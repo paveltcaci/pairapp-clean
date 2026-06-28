@@ -34,4 +34,5 @@ export const Collections = {
   relationshipEvents: "relationship_events",
   reports: "reports",
   subscriptions: "subscriptions",
+  wishlistItems: "wishlist_items",
 } as const;

@@ -186,6 +186,26 @@ export const removeSavedActivityIdeaSchema = z.object({
   historyId: z.string().trim().min(1),
 });
 
+// ── Wishlist ────────────────────────────────────────────────────────────────
+
+export const createWishlistItemSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(2000).nullish(),
+  emoji: z.string().trim().max(10).optional(),
+  category: z.string().trim().max(60).optional(),
+  priority: z.enum(["low", "medium", "high"]).optional(),
+  budgetLevel: z.enum(["free", "low", "medium", "high"]).optional(),
+});
+
+export const updateWishlistItemStatusSchema = z.object({
+  itemId: z.string().min(1),
+  status: z.enum(["active", "done", "archived"]),
+});
+
+export const deleteWishlistItemSchema = z.object({
+  itemId: z.string().min(1),
+});
+
 /**
  * Прогоняет данные через Zod-схему и конвертирует ошибку валидации
  * в стандартный HttpsError('invalid-argument', ...).

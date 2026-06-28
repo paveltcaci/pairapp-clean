@@ -179,6 +179,12 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ---------- wishlist_items ----------
+    match /wishlist_items/{itemId} {
+      allow read: if isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
     // ---------- audit_logs ----------
     // Только для административной панели — не предназначены для
     // чтения клиентским приложением пары.
@@ -199,7 +205,7 @@ service cloud.firestore {
           'users', 'couples', 'issues', 'issue_messages', 'agreements',
           'checkins', 'activities', 'activity_history', 'chore_tasks',
           'chore_spins', 'quiz_questions', 'quiz_sessions', 'quiz_answers',
-          'relationship_events', 'reports', 'subscriptions'
+          'relationship_events', 'reports', 'subscriptions', 'wishlist_items'
         ];
     }
   }

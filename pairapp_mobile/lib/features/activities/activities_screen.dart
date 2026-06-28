@@ -7,6 +7,7 @@ import '../../shared/widgets/app_card.dart';
 import '../../theme/app_colors.dart';
 import '../chores/chore_randomizer_screen.dart';
 import '../randomizer/randomizer_screen.dart';
+import '../wishlist/wishlist_screen.dart';
 
 class ActivitiesScreen extends StatefulWidget {
   const ActivitiesScreen({super.key});
@@ -153,7 +154,10 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        onTap: () {},
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const WishlistScreen()),
+        ),
       ),
     ];
 
