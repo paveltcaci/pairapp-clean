@@ -1,0 +1,3231 @@
+diff --git a/pairapp-backend/firestore/firestore.indexes.json b/pairapp-backend/firestore/firestore.indexes.json
+index a8d8de7..54ae827 100644
+--- a/pairapp-backend/firestore/firestore.indexes.json
++++ b/pairapp-backend/firestore/firestore.indexes.json
+@@ -105,6 +105,23 @@
+         { "fieldPath": "issueId", "order": "ASCENDING" },
+         { "fieldPath": "createdAt", "order": "DESCENDING" }
+       ]
++    },
++    {
++      "collectionGroup": "quiz_rounds",
++      "queryScope": "COLLECTION",
++      "fields": [
++        { "fieldPath": "coupleId", "order": "ASCENDING" },
++        { "fieldPath": "status", "order": "ASCENDING" },
++        { "fieldPath": "createdAt", "order": "DESCENDING" }
++      ]
++    },
++    {
++      "collectionGroup": "quiz_rounds",
++      "queryScope": "COLLECTION",
++      "fields": [
++        { "fieldPath": "coupleId", "order": "ASCENDING" },
++        { "fieldPath": "completedAt", "order": "DESCENDING" }
++      ]
+     }
+   ],
+   "fieldOverrides": []
+diff --git a/pairapp-backend/firestore/firestore.rules b/pairapp-backend/firestore/firestore.rules
+index 38eb543..7ad2c46 100644
+--- a/pairapp-backend/firestore/firestore.rules
++++ b/pairapp-backend/firestore/firestore.rules
+@@ -159,6 +159,14 @@ service cloud.firestore {
+       allow write: if false;
+     }
+ 
++    // ---------- quiz_rounds (Квизы V1) ----------
++    // Один вопрос — один документ раунда. Оба партнёра читают раунд,
++    // но клиент не должен показывать answers партнёра до status == 'completed'.
++    match /quiz_rounds/{roundId} {
++      allow read: if isMemberOfCouple(resource.data.coupleId);
++      allow write: if false;
++    }
++
+     // ---------- relationship_events ----------
+     match /relationship_events/{eventId} {
+       allow read: if isMemberOfCouple(resource.data.coupleId);
+@@ -205,7 +213,7 @@ service cloud.firestore {
+           'users', 'couples', 'issues', 'issue_messages', 'agreements',
+           'checkins', 'activities', 'activity_history', 'chore_tasks',
+           'chore_spins', 'quiz_questions', 'quiz_sessions', 'quiz_answers',
+-          'relationship_events', 'reports', 'subscriptions', 'wishlist_items'
++          'quiz_rounds', 'relationship_events', 'reports', 'subscriptions', 'wishlist_items'
+         ];
+     }
+   }
+diff --git a/pairapp-backend/functions/src/config/firebase.ts b/pairapp-backend/functions/src/config/firebase.ts
+index 86c6eac..abfb1ff 100644
+--- a/pairapp-backend/functions/src/config/firebase.ts
++++ b/pairapp-backend/functions/src/config/firebase.ts
+@@ -31,6 +31,7 @@ export const Collections = {
+   quizQuestions: "quiz_questions",
+   quizSessions: "quiz_sessions",
+   quizAnswers: "quiz_answers",
++  quizRounds: "quiz_rounds",
+   relationshipEvents: "relationship_events",
+   reports: "reports",
+   subscriptions: "subscriptions",
+diff --git a/pairapp-backend/functions/src/modules/quizzes/createQuizRound.ts b/pairapp-backend/functions/src/modules/quizzes/createQuizRound.ts
+new file mode 100644
+index 0000000..8d61388
+--- /dev/null
++++ b/pairapp-backend/functions/src/modules/quizzes/createQuizRound.ts
+@@ -0,0 +1,137 @@
++import { onCall } from "firebase-functions/v2/https";
++import { Timestamp } from "firebase-admin/firestore";
++import { db } from "../../config/firebase";
++import { requireAuth } from "../../utils/auth";
++import { parseOrThrow } from "../../utils/validation";
++import { getActiveCoupleOrThrow, resolvePartner } from "../../utils/couple-context";
++import { Errors } from "../../utils/errors";
++import { z } from "zod";
++
++// ── Validation schema ────────────────────────────────────────────────────────
++
++const createQuizRoundSchema = z.object({
++  /** Категория вопроса (строка из клиента). */
++  category: z.string().trim().min(1).max(100),
++  /** Локальный id вопроса из quiz_questions_data.dart. */
++  questionId: z.string().trim().min(1).max(100),
++  /** Текст вопроса — snapshot, чтобы не зависеть от client-side data. */
++  questionText: z.string().trim().min(1).max(1000),
++  /** Тип ответа. */
++  answerType: z.enum(["open_text", "choice"]),
++  /** Варианты ответа (только для choice). */
++  options: z
++    .array(
++      z.object({
++        id: z.string().trim().min(1).max(60),
++        text: z.string().trim().min(1).max(200),
++      })
++    )
++    .max(8)
++    .optional()
++    .nullable(),
++});
++
++export type CreateQuizRoundInput = z.infer<typeof createQuizRoundSchema>;
++
++// ── Firestore document types ────────────────────────────────────────────────
++
++/** Статус одного раунда (один вопрос — два партнёра). */
++export type QuizRoundStatus =
++  | "waiting_both"     // Никто ещё не ответил
++  | "waiting_partner"  // Один ответил, ждём второго
++  | "completed";       // Оба ответили → reveal
++
++export interface QuizRoundOption {
++  id: string;
++  text: string;
++}
++
++export interface QuizRoundDoc {
++  id: string;
++  coupleId: string;
++  createdBy: string;
++  category: string;
++  questionId: string;
++  questionText: string;
++  answerType: "open_text" | "choice";
++  options: QuizRoundOption[] | null;
++  /** uid → ответ пользователя. Пустой до ответов. */
++  answers: Record<string, string>;
++  /** uid → timestamp ответа. */
++  answeredAt: Record<string, Timestamp>;
++  status: QuizRoundStatus;
++  /** Только для choice: true если ответы совпали. */
++  matched: boolean | null;
++  partnerAId: string;
++  partnerBId: string;
++  createdAt: Timestamp;
++  completedAt: Timestamp | null;
++}
++
++// ── Collections helper ──────────────────────────────────────────────────────
++
++const QUIZ_ROUNDS = "quiz_rounds";
++
++// ── Cloud Function ──────────────────────────────────────────────────────────
++
++/**
++ * createQuizRound — Квизы V1.
++ *
++ * Один партнёр выбирает категорию, затем конкретный вопрос и запускает раунд.
++ * Второй партнёр видит активный вопрос в реальном времени через Stream.
++ * Пока оба не ответили — ответы не раскрываются на клиенте.
++ */
++export const createQuizRound = onCall<CreateQuizRoundInput>(
++  async (request) => {
++    const uid = requireAuth(request);
++    const input = parseOrThrow(createQuizRoundSchema, request.data);
++
++    const { couple } = await getActiveCoupleOrThrow(uid);
++    const { partnerId } = resolvePartner(couple, uid);
++
++    if (!partnerId) {
++      throw Errors.failedPrecondition(
++        "Квизы доступны только когда оба партнёра подключены."
++      );
++    }
++
++    // Проверяем, нет ли уже активного раунда (waiting_both / waiting_partner).
++    const activeSnap = await db
++      .collection(QUIZ_ROUNDS)
++      .where("coupleId", "==", couple.id)
++      .where("status", "in", ["waiting_both", "waiting_partner"])
++      .get();
++
++    if (!activeSnap.empty) {
++      throw Errors.failedPrecondition(
++        "У вашей пары уже есть активный вопрос. Ответьте на него, прежде чем запускать новый."
++      );
++    }
++
++    const roundRef = db.collection(QUIZ_ROUNDS).doc();
++    const now = Timestamp.now();
++
++    const roundDoc: QuizRoundDoc = {
++      id: roundRef.id,
++      coupleId: couple.id,
++      createdBy: uid,
++      category: input.category,
++      questionId: input.questionId,
++      questionText: input.questionText,
++      answerType: input.answerType,
++      options: input.options ?? null,
++      answers: {},
++      answeredAt: {},
++      status: "waiting_both",
++      matched: null,
++      partnerAId: couple.partnerAId,
++      partnerBId: couple.partnerBId as string,
++      createdAt: now,
++      completedAt: null,
++    };
++
++    await roundRef.set(roundDoc);
++
++    return { roundId: roundRef.id };
++  }
++);
+diff --git a/pairapp-backend/functions/src/modules/quizzes/index.ts b/pairapp-backend/functions/src/modules/quizzes/index.ts
+index d898dd0..715ea87 100644
+--- a/pairapp-backend/functions/src/modules/quizzes/index.ts
++++ b/pairapp-backend/functions/src/modules/quizzes/index.ts
+@@ -1,2 +1,5 @@
+ export * from "./startQuizSession";
+ export * from "./submitQuizAnswers";
++// Квизы V1 — один вопрос за раз
++export * from "./createQuizRound";
++export * from "./submitQuizAnswer";
+diff --git a/pairapp-backend/functions/src/modules/quizzes/submitQuizAnswer.ts b/pairapp-backend/functions/src/modules/quizzes/submitQuizAnswer.ts
+new file mode 100644
+index 0000000..7e18ae4
+--- /dev/null
++++ b/pairapp-backend/functions/src/modules/quizzes/submitQuizAnswer.ts
+@@ -0,0 +1,111 @@
++import { onCall } from "firebase-functions/v2/https";
++import { Timestamp } from "firebase-admin/firestore";
++import { db } from "../../config/firebase";
++import { requireAuth } from "../../utils/auth";
++import { parseOrThrow } from "../../utils/validation";
++import { getActiveCoupleOrThrow, resolvePartner } from "../../utils/couple-context";
++import { Errors } from "../../utils/errors";
++import { z } from "zod";
++import { QuizRoundDoc, QuizRoundStatus } from "./createQuizRound";
++
++// ── Validation schema ────────────────────────────────────────────────────────
++
++const submitQuizAnswerSchema = z.object({
++  roundId: z.string().trim().min(1).max(128),
++  answer: z.string().trim().min(1).max(2000),
++});
++
++export type SubmitQuizAnswerInput = z.infer<typeof submitQuizAnswerSchema>;
++
++// ── Cloud Function ──────────────────────────────────────────────────────────
++
++const QUIZ_ROUNDS = "quiz_rounds";
++
++/**
++ * submitQuizAnswer — Квизы V1.
++ *
++ * Пишет ответ текущего пользователя в документ раунда.
++ * Если оба партнёра ответили → status = "completed", вычисляем matched.
++ * Ответы в поле `answers` хранятся по uid — клиент не должен раскрывать
++ * ответ партнёра пока status != "completed".
++ */
++export const submitQuizAnswer = onCall<SubmitQuizAnswerInput>(
++  async (request) => {
++    const uid = requireAuth(request);
++    const input = parseOrThrow(submitQuizAnswerSchema, request.data);
++
++    const { couple } = await getActiveCoupleOrThrow(uid);
++    resolvePartner(couple, uid); // Guard: убедиться что uid в паре
++
++    const roundRef = db.collection(QUIZ_ROUNDS).doc(input.roundId);
++
++    const outcome = await db.runTransaction(async (tx) => {
++      const snap = await tx.get(roundRef);
++
++      if (!snap.exists) {
++        throw Errors.notFound("Раунд квиза");
++      }
++
++      const round = snap.data() as QuizRoundDoc;
++
++      if (round.coupleId !== couple.id) {
++        throw Errors.permissionDenied("Этот раунд принадлежит другой паре.");
++      }
++
++      if (round.status === "completed") {
++        throw Errors.failedPrecondition("Раунд уже завершён.");
++      }
++
++      if (round.answers[uid] !== undefined) {
++        throw Errors.failedPrecondition("Вы уже ответили на этот вопрос.");
++      }
++
++      const now = Timestamp.now();
++
++      const newAnswers = { ...round.answers, [uid]: input.answer };
++      const newAnsweredAt = { ...round.answeredAt, [uid]: now };
++
++      // Определяем партнёра — тот uid в паре который != текущий
++      const partnerUid =
++        round.partnerAId === uid ? round.partnerBId : round.partnerAId;
++
++      const partnerAnswered = round.answers[partnerUid] !== undefined;
++
++      let newStatus: QuizRoundStatus;
++      let matched: boolean | null = null;
++      let completedAt: Timestamp | null = null;
++
++      if (partnerAnswered) {
++        // Оба ответили
++        newStatus = "completed";
++        completedAt = now;
++
++        if (round.answerType === "choice") {
++          const myAnswer = input.answer.trim().toLowerCase();
++          const partnerAnswer = round.answers[partnerUid].trim().toLowerCase();
++          matched = myAnswer === partnerAnswer;
++        } else {
++          matched = null; // open_text — нет правильного/неправильного
++        }
++      } else {
++        newStatus = "waiting_partner";
++      }
++
++      tx.update(roundRef, {
++        answers: newAnswers,
++        answeredAt: newAnsweredAt,
++        status: newStatus,
++        matched,
++        completedAt,
++      });
++
++      return {
++        bothAnswered: partnerAnswered,
++        matched,
++        status: newStatus,
++      };
++    });
++
++    return outcome;
++  }
++);
+diff --git a/pairapp_mobile/lib/features/activities/activities_screen.dart b/pairapp_mobile/lib/features/activities/activities_screen.dart
+index 6b4c32b..977ca0c 100644
+--- a/pairapp_mobile/lib/features/activities/activities_screen.dart
++++ b/pairapp_mobile/lib/features/activities/activities_screen.dart
+@@ -6,6 +6,7 @@ import '../../shared/services/user_service.dart';
+ import '../../shared/widgets/app_card.dart';
+ import '../../theme/app_colors.dart';
+ import '../chores/chore_randomizer_screen.dart';
++import '../quiz/quiz_screen.dart';
+ import '../randomizer/randomizer_screen.dart';
+ import '../wishlist/wishlist_screen.dart';
+ 
+@@ -143,7 +144,10 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
+           begin: Alignment.topLeft,
+           end: Alignment.bottomRight,
+         ),
+-        onTap: () {},
++        onTap: () => Navigator.push(
++          context,
++          MaterialPageRoute(builder: (_) => const QuizScreen()),
++        ),
+       ),
+       _ActivityCardData(
+         icon: Icons.favorite_border_rounded,
+diff --git a/pairapp_mobile/lib/features/quiz/quiz_screen.dart b/pairapp_mobile/lib/features/quiz/quiz_screen.dart
+new file mode 100644
+index 0000000..c10cda8
+--- /dev/null
++++ b/pairapp_mobile/lib/features/quiz/quiz_screen.dart
+@@ -0,0 +1,1476 @@
++import 'dart:math';
++
++import 'package:firebase_auth/firebase_auth.dart';
++import 'package:flutter/material.dart';
++
++import '../../shared/data/quiz_questions_data.dart';
++import '../../shared/models/quiz_question.dart';
++import '../../shared/models/quiz_round.dart';
++import '../../shared/services/functions_service.dart';
++import '../../shared/services/quiz_service.dart';
++import '../../shared/services/user_service.dart';
++import '../../theme/app_colors.dart';
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Entry point
++// ─────────────────────────────────────────────────────────────────────────────
++
++class QuizScreen extends StatefulWidget {
++  const QuizScreen({super.key});
++
++  @override
++  State<QuizScreen> createState() => _QuizScreenState();
++}
++
++class _QuizScreenState extends State<QuizScreen> {
++  final _userService = UserService();
++  final _quizService = QuizService();
++
++  String? _coupleId;
++  String? _currentUserId;
++  bool _loading = true;
++
++  @override
++  void initState() {
++    super.initState();
++    _loadProfile();
++  }
++
++  Future<void> _loadProfile() async {
++    try {
++      final user = await _userService.getCurrentUserProfile();
++      final uid = FirebaseAuth.instance.currentUser?.uid;
++      if (!mounted) return;
++      setState(() {
++        _coupleId = user?.currentCoupleId;
++        _currentUserId = uid;
++        _loading = false;
++      });
++    } catch (_) {
++      if (!mounted) return;
++      setState(() => _loading = false);
++    }
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      body: Container(
++        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
++        child: SafeArea(
++          child: _loading
++              ? const Center(
++                  child: CircularProgressIndicator(color: AppColors.purple))
++              : _buildBody(),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildBody() {
++    final coupleId = _coupleId;
++    final uid = _currentUserId;
++
++    if (coupleId == null || coupleId.isEmpty || uid == null) {
++      return _buildNoCoupleState();
++    }
++
++    // Main stream: watch active round
++    return StreamBuilder<QuizRound?>(
++      stream: _quizService.watchActiveRound(coupleId),
++      builder: (context, snapshot) {
++        if (snapshot.connectionState == ConnectionState.waiting) {
++          return const Center(
++            child: CircularProgressIndicator(color: AppColors.purple),
++          );
++        }
++        if (snapshot.hasError) {
++          return _buildError();
++        }
++
++        final activeRound = snapshot.data;
++
++        if (activeRound != null) {
++          // Show active round screen
++          return _ActiveRoundView(
++            round: activeRound,
++            uid: uid,
++            quizService: _quizService,
++            onClose: () {},
++          );
++        }
++
++        // No active round — show categories
++        return _CategoryPickerView(
++          coupleId: coupleId,
++          uid: uid,
++          quizService: _quizService,
++        );
++      },
++    );
++  }
++
++  Widget _buildNoCoupleState() {
++    return Center(
++      child: Padding(
++        padding: const EdgeInsets.all(32),
++        child: Column(
++          mainAxisAlignment: MainAxisAlignment.center,
++          children: [
++            const Text('👫', style: TextStyle(fontSize: 56)),
++            const SizedBox(height: 16),
++            const Text(
++              'Квизы для пары',
++              style: TextStyle(
++                  fontSize: 22,
++                  fontWeight: FontWeight.bold,
++                  color: AppColors.textPrimary),
++            ),
++            const SizedBox(height: 8),
++            const Text(
++              'Пригласите партнёра, чтобы начать квизы вместе',
++              style: TextStyle(
++                  fontSize: 14, color: AppColors.textSecondary, height: 1.5),
++              textAlign: TextAlign.center,
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++
++  Widget _buildError() {
++    return const Center(
++      child: Text('Ошибка загрузки',
++          style: TextStyle(color: AppColors.textSecondary)),
++    );
++  }
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Category Picker
++// ─────────────────────────────────────────────────────────────────────────────
++
++class _CategoryPickerView extends StatelessWidget {
++  const _CategoryPickerView({
++    required this.coupleId,
++    required this.uid,
++    required this.quizService,
++  });
++
++  final String coupleId;
++  final String uid;
++  final QuizService quizService;
++
++  @override
++  Widget build(BuildContext context) {
++    return SingleChildScrollView(
++      padding: const EdgeInsets.symmetric(horizontal: 20),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          const SizedBox(height: 16),
++          // Back button + title
++          Row(
++            children: [
++              GestureDetector(
++                onTap: () => Navigator.pop(context),
++                child: Container(
++                  padding: const EdgeInsets.all(8),
++                  decoration: BoxDecoration(
++                    color: AppColors.bgCardLight,
++                    borderRadius: BorderRadius.circular(12),
++                  ),
++                  child: const Icon(Icons.arrow_back_rounded,
++                      color: AppColors.textPrimary, size: 20),
++                ),
++              ),
++              const SizedBox(width: 12),
++              const Column(
++                crossAxisAlignment: CrossAxisAlignment.start,
++                children: [
++                  Text(
++                    'Квизы для пары',
++                    style: TextStyle(
++                      fontSize: 22,
++                      fontWeight: FontWeight.bold,
++                      color: AppColors.textPrimary,
++                    ),
++                  ),
++                  Text(
++                    'Выберите категорию',
++                    style: TextStyle(
++                        fontSize: 13, color: AppColors.textSecondary),
++                  ),
++                ],
++              ),
++            ],
++          ),
++          const SizedBox(height: 24),
++          GridView.builder(
++            shrinkWrap: true,
++            physics: const NeverScrollableScrollPhysics(),
++            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
++              crossAxisCount: 2,
++              crossAxisSpacing: 12,
++              mainAxisSpacing: 12,
++              childAspectRatio: 0.88,
++            ),
++            itemCount: kQuizCategories.length,
++            itemBuilder: (context, i) {
++              final cat = kQuizCategories[i];
++              return _CategoryCard(
++                category: cat,
++                onTap: () => _onCategoryTap(context, cat),
++              );
++            },
++          ),
++          const SizedBox(height: 32),
++          // History section
++          _CompletedRoundsSection(
++              coupleId: coupleId, uid: uid, quizService: quizService),
++          const SizedBox(height: 32),
++        ],
++      ),
++    );
++  }
++
++  void _onCategoryTap(BuildContext context, QuizCategory cat) {
++    if (cat.isAdult) {
++      _showAdultConfirm(context, cat);
++    } else {
++      _openCategory(context, cat);
++    }
++  }
++
++  void _showAdultConfirm(BuildContext context, QuizCategory cat) {
++    showDialog<bool>(
++      context: context,
++      builder: (ctx) => AlertDialog(
++        backgroundColor: AppColors.bgCard,
++        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
++        title: const Row(
++          children: [
++            Text('🔞', style: TextStyle(fontSize: 24)),
++            SizedBox(width: 8),
++            Text(
++              'Близость 18+',
++              style: TextStyle(
++                  color: AppColors.textPrimary,
++                  fontSize: 18,
++                  fontWeight: FontWeight.bold),
++            ),
++          ],
++        ),
++        content: const Text(
++          'Эта категория только для взрослых партнёров. '
++          'Вопросы посвящены личным границам, желаниям и близости.\n\n'
++          'Продолжить?',
++          style: TextStyle(
++              color: AppColors.textSecondary, fontSize: 14, height: 1.5),
++        ),
++        actions: [
++          TextButton(
++            onPressed: () => Navigator.pop(ctx),
++            child: const Text('Отмена',
++                style: TextStyle(color: AppColors.textSecondary)),
++          ),
++          TextButton(
++            onPressed: () {
++              Navigator.pop(ctx);
++              _openCategory(context, cat);
++            },
++            child: Text(
++              'Продолжить',
++              style: TextStyle(
++                color: Color(cat.gradient[0]),
++                fontWeight: FontWeight.bold,
++              ),
++            ),
++          ),
++        ],
++      ),
++    );
++  }
++
++  void _openCategory(BuildContext context, QuizCategory cat) {
++    Navigator.push(
++      context,
++      MaterialPageRoute(
++        builder: (_) => _QuestionPickerScreen(
++          category: cat,
++          coupleId: coupleId,
++          uid: uid,
++          quizService: quizService,
++        ),
++      ),
++    );
++  }
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Category Card
++// ─────────────────────────────────────────────────────────────────────────────
++
++class _CategoryCard extends StatelessWidget {
++  const _CategoryCard({required this.category, required this.onTap});
++
++  final QuizCategory category;
++  final VoidCallback onTap;
++
++  @override
++  Widget build(BuildContext context) {
++    final gradient = quizCategoryGradient(category);
++
++    return GestureDetector(
++      onTap: onTap,
++      child: Container(
++        padding: const EdgeInsets.all(16),
++        decoration: BoxDecoration(
++          gradient: gradient,
++          borderRadius: BorderRadius.circular(20),
++          boxShadow: [
++            BoxShadow(
++              color: Color(category.gradient[0]).withValues(alpha: 0.3),
++              blurRadius: 16,
++              offset: const Offset(0, 4),
++            ),
++          ],
++        ),
++        child: Column(
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            // Lock badge for adult
++            if (category.isAdult)
++              Align(
++                alignment: Alignment.topRight,
++                child: Container(
++                  padding:
++                      const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
++                  decoration: BoxDecoration(
++                    color: Colors.black.withValues(alpha: 0.35),
++                    borderRadius: BorderRadius.circular(20),
++                  ),
++                  child: const Text(
++                    '18+',
++                    style: TextStyle(
++                        fontSize: 10,
++                        fontWeight: FontWeight.bold,
++                        color: Colors.white),
++                  ),
++                ),
++              )
++            else
++              const SizedBox(height: 20),
++            const Spacer(),
++            Text(
++              category.emoji,
++              style: const TextStyle(fontSize: 32),
++            ),
++            const SizedBox(height: 8),
++            Text(
++              category.title,
++              style: const TextStyle(
++                fontSize: 13,
++                fontWeight: FontWeight.bold,
++                color: Colors.white,
++                height: 1.3,
++              ),
++            ),
++          ],
++        ),
++      ),
++    );
++  }
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Question Picker (random question from category)
++// ─────────────────────────────────────────────────────────────────────────────
++
++class _QuestionPickerScreen extends StatefulWidget {
++  const _QuestionPickerScreen({
++    required this.category,
++    required this.coupleId,
++    required this.uid,
++    required this.quizService,
++  });
++
++  final QuizCategory category;
++  final String coupleId;
++  final String uid;
++  final QuizService quizService;
++
++  @override
++  State<_QuestionPickerScreen> createState() => _QuestionPickerScreenState();
++}
++
++class _QuestionPickerScreenState extends State<_QuestionPickerScreen> {
++  late QuizQuestion _currentQuestion;
++  bool _launching = false;
++
++  @override
++  void initState() {
++    super.initState();
++    _pickRandomQuestion();
++  }
++
++  void _pickRandomQuestion() {
++    final q = randomQuestionFromCategory(widget.category.id);
++    if (q != null) {
++      setState(() => _currentQuestion = q);
++    }
++  }
++
++  Future<void> _launchRound() async {
++    if (_launching) return;
++    setState(() => _launching = true);
++    try {
++      await widget.quizService.createQuizRound(
++        category: widget.category.id,
++        questionId: _currentQuestion.id,
++        questionText: _currentQuestion.text,
++        answerType: _currentQuestion.answerType.firestoreValue,
++        options: _currentQuestion.options
++            ?.map((o) => {'id': o.id, 'text': o.text})
++            .toList(),
++      );
++      if (!mounted) return;
++      // Pop back to QuizScreen — the stream will pick up the active round
++      Navigator.pop(context);
++    } on FunctionsCallException catch (e) {
++      if (!mounted) return;
++      _showError(e.message);
++    } catch (_) {
++      if (!mounted) return;
++      _showError('Не удалось запустить вопрос. Попробуйте ещё раз.');
++    } finally {
++      if (mounted) setState(() => _launching = false);
++    }
++  }
++
++  void _showError(String msg) {
++    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
++      content: Text(msg),
++      backgroundColor: AppColors.bgCardLight,
++      behavior: SnackBarBehavior.floating,
++      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
++      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
++    ));
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final gradient = quizCategoryGradient(widget.category);
++
++    return Scaffold(
++      body: Container(
++        decoration: const BoxDecoration(gradient: AppColors.bgGradient),
++        child: SafeArea(
++          child: Column(
++            children: [
++              // Header
++              Padding(
++                padding:
++                    const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
++                child: Row(
++                  children: [
++                    GestureDetector(
++                      onTap: () => Navigator.pop(context),
++                      child: Container(
++                        padding: const EdgeInsets.all(8),
++                        decoration: BoxDecoration(
++                          color: AppColors.bgCardLight,
++                          borderRadius: BorderRadius.circular(12),
++                        ),
++                        child: const Icon(Icons.arrow_back_rounded,
++                            color: AppColors.textPrimary, size: 20),
++                      ),
++                    ),
++                    const SizedBox(width: 12),
++                    Text(
++                      '${widget.category.emoji} ${widget.category.title.replaceAll('\n', ' ')}',
++                      style: const TextStyle(
++                        fontSize: 18,
++                        fontWeight: FontWeight.bold,
++                        color: AppColors.textPrimary,
++                      ),
++                    ),
++                  ],
++                ),
++              ),
++
++              Expanded(
++                child: Padding(
++                  padding: const EdgeInsets.symmetric(horizontal: 20),
++                  child: Column(
++                    mainAxisAlignment: MainAxisAlignment.center,
++                    children: [
++                      // Question card
++                      Container(
++                        width: double.infinity,
++                        padding: const EdgeInsets.all(28),
++                        decoration: BoxDecoration(
++                          gradient: gradient,
++                          borderRadius: BorderRadius.circular(24),
++                          boxShadow: [
++                            BoxShadow(
++                              color: Color(widget.category.gradient[0])
++                                  .withValues(alpha: 0.4),
++                              blurRadius: 24,
++                              offset: const Offset(0, 8),
++                            ),
++                          ],
++                        ),
++                        child: Column(
++                          children: [
++                            Text(
++                              widget.category.emoji,
++                              style: const TextStyle(fontSize: 48),
++                            ),
++                            const SizedBox(height: 20),
++                            Text(
++                              _currentQuestion.text,
++                              style: const TextStyle(
++                                fontSize: 20,
++                                fontWeight: FontWeight.w600,
++                                color: Colors.white,
++                                height: 1.4,
++                              ),
++                              textAlign: TextAlign.center,
++                            ),
++                            const SizedBox(height: 16),
++                            Container(
++                              padding: const EdgeInsets.symmetric(
++                                  horizontal: 12, vertical: 6),
++                              decoration: BoxDecoration(
++                                color: Colors.white.withValues(alpha: 0.15),
++                                borderRadius: BorderRadius.circular(20),
++                              ),
++                              child: Text(
++                                _currentQuestion.answerType ==
++                                        QuizAnswerType.openText
++                                    ? '✏️ Свободный ответ'
++                                    : '🎯 Выбор варианта',
++                                style: TextStyle(
++                                  fontSize: 12,
++                                  color: Colors.white.withValues(alpha: 0.9),
++                                ),
++                              ),
++                            ),
++                          ],
++                        ),
++                      ),
++
++                      const SizedBox(height: 32),
++
++                      // Shuffle button
++                      GestureDetector(
++                        onTap: _pickRandomQuestion,
++                        child: Container(
++                          padding: const EdgeInsets.symmetric(
++                              horizontal: 20, vertical: 12),
++                          decoration: BoxDecoration(
++                            color: AppColors.bgCardLight,
++                            borderRadius: BorderRadius.circular(16),
++                            border: Border.all(color: AppColors.bgCardLight),
++                          ),
++                          child: const Row(
++                            mainAxisSize: MainAxisSize.min,
++                            children: [
++                              Icon(Icons.shuffle_rounded,
++                                  color: AppColors.textSecondary, size: 18),
++                              SizedBox(width: 8),
++                              Text(
++                                'Другой вопрос',
++                                style: TextStyle(
++                                    color: AppColors.textSecondary,
++                                    fontSize: 14),
++                              ),
++                            ],
++                          ),
++                        ),
++                      ),
++
++                      const SizedBox(height: 16),
++
++                      // Launch button
++                      SizedBox(
++                        width: double.infinity,
++                        child: GestureDetector(
++                          onTap: _launching ? null : _launchRound,
++                          child: Container(
++                            padding: const EdgeInsets.symmetric(vertical: 16),
++                            decoration: BoxDecoration(
++                              gradient: gradient,
++                              borderRadius: BorderRadius.circular(16),
++                              boxShadow: [
++                                BoxShadow(
++                                  color: Color(widget.category.gradient[0])
++                                      .withValues(alpha: 0.4),
++                                  blurRadius: 12,
++                                  offset: const Offset(0, 4),
++                                ),
++                              ],
++                            ),
++                            child: Center(
++                              child: _launching
++                                  ? const SizedBox(
++                                      width: 22,
++                                      height: 22,
++                                      child: CircularProgressIndicator(
++                                          strokeWidth: 2,
++                                          color: Colors.white),
++                                    )
++                                  : const Text(
++                                      'Задать вопрос партнёру',
++                                      style: TextStyle(
++                                        fontSize: 16,
++                                        fontWeight: FontWeight.bold,
++                                        color: Colors.white,
++                                      ),
++                                    ),
++                            ),
++                          ),
++                        ),
++                      ),
++                    ],
++                  ),
++                ),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Active Round View
++// ─────────────────────────────────────────────────────────────────────────────
++
++class _ActiveRoundView extends StatefulWidget {
++  const _ActiveRoundView({
++    required this.round,
++    required this.uid,
++    required this.quizService,
++    required this.onClose,
++  });
++
++  final QuizRound round;
++  final String uid;
++  final QuizService quizService;
++  final VoidCallback onClose;
++
++  @override
++  State<_ActiveRoundView> createState() => _ActiveRoundViewState();
++}
++
++class _ActiveRoundViewState extends State<_ActiveRoundView> {
++  // Listen to live round updates
++  @override
++  Widget build(BuildContext context) {
++    return StreamBuilder<QuizRound?>(
++      stream: widget.quizService.watchRound(widget.round.id),
++      initialData: widget.round,
++      builder: (context, snap) {
++        final round = snap.data ?? widget.round;
++        return _buildRoundContent(round);
++      },
++    );
++  }
++
++  Widget _buildRoundContent(QuizRound round) {
++    final uid = widget.uid;
++    final iHaveAnswered = round.hasAnswered(uid);
++
++    if (round.isCompleted) {
++      return _RevealView(round: round, uid: uid);
++    }
++
++    return SingleChildScrollView(
++      padding: const EdgeInsets.symmetric(horizontal: 20),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          const SizedBox(height: 16),
++          Row(
++            children: [
++              GestureDetector(
++                onTap: () => Navigator.pop(context),
++                child: Container(
++                  padding: const EdgeInsets.all(8),
++                  decoration: BoxDecoration(
++                    color: AppColors.bgCardLight,
++                    borderRadius: BorderRadius.circular(12),
++                  ),
++                  child: const Icon(Icons.arrow_back_rounded,
++                      color: AppColors.textPrimary, size: 20),
++                ),
++              ),
++              const SizedBox(width: 12),
++              const Text(
++                'Активный вопрос',
++                style: TextStyle(
++                  fontSize: 20,
++                  fontWeight: FontWeight.bold,
++                  color: AppColors.textPrimary,
++                ),
++              ),
++            ],
++          ),
++          const SizedBox(height: 24),
++
++          // Question card
++          _QuestionCard(round: round),
++
++          const SizedBox(height: 20),
++
++          // Status / answer form
++          if (!iHaveAnswered)
++            _AnswerForm(
++              round: round,
++              uid: uid,
++              quizService: widget.quizService,
++            )
++          else
++            _WaitingView(round: round, uid: uid),
++
++          const SizedBox(height: 32),
++        ],
++      ),
++    );
++  }
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Question Card (in round)
++// ─────────────────────────────────────────────────────────────────────────────
++
++class _QuestionCard extends StatelessWidget {
++  const _QuestionCard({required this.round});
++  final QuizRound round;
++
++  @override
++  Widget build(BuildContext context) {
++    // Find category for gradient
++    final cat = kQuizCategories.firstWhere(
++      (c) => c.id == round.category,
++      orElse: () => kQuizCategories.first,
++    );
++    final gradient = quizCategoryGradient(cat);
++
++    return Container(
++      width: double.infinity,
++      padding: const EdgeInsets.all(24),
++      decoration: BoxDecoration(
++        gradient: gradient,
++        borderRadius: BorderRadius.circular(20),
++        boxShadow: [
++          BoxShadow(
++            color: Color(cat.gradient[0]).withValues(alpha: 0.3),
++            blurRadius: 20,
++            offset: const Offset(0, 6),
++          ),
++        ],
++      ),
++      child: Column(
++        children: [
++          Text(cat.emoji, style: const TextStyle(fontSize: 36)),
++          const SizedBox(height: 12),
++          Text(
++            round.questionText,
++            style: const TextStyle(
++              fontSize: 18,
++              fontWeight: FontWeight.w600,
++              color: Colors.white,
++              height: 1.4,
++            ),
++            textAlign: TextAlign.center,
++          ),
++        ],
++      ),
++    );
++  }
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Answer Form
++// ─────────────────────────────────────────────────────────────────────────────
++
++class _AnswerForm extends StatefulWidget {
++  const _AnswerForm({
++    required this.round,
++    required this.uid,
++    required this.quizService,
++  });
++  final QuizRound round;
++  final String uid;
++  final QuizService quizService;
++
++  @override
++  State<_AnswerForm> createState() => _AnswerFormState();
++}
++
++class _AnswerFormState extends State<_AnswerForm> {
++  final _textCtrl = TextEditingController();
++  String? _selectedOptionId;
++  bool _submitting = false;
++
++  @override
++  void dispose() {
++    _textCtrl.dispose();
++    super.dispose();
++  }
++
++  bool get _isChoice => widget.round.answerType == 'choice';
++
++  Future<void> _submit() async {
++    final answer =
++        _isChoice ? _selectedOptionId : _textCtrl.text.trim();
++    if (answer == null || answer.isEmpty) return;
++
++    setState(() => _submitting = true);
++    try {
++      await widget.quizService.submitQuizAnswer(
++        roundId: widget.round.id,
++        answer: answer,
++      );
++    } on FunctionsCallException catch (e) {
++      if (!mounted) return;
++      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
++        content: Text(e.message),
++        backgroundColor: AppColors.bgCardLight,
++        behavior: SnackBarBehavior.floating,
++        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
++        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
++      ));
++    } catch (_) {
++      if (!mounted) return;
++      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
++        content: Text('Не удалось отправить ответ'),
++        backgroundColor: AppColors.bgCardLight,
++        behavior: SnackBarBehavior.floating,
++        margin: EdgeInsets.fromLTRB(16, 0, 16, 16),
++      ));
++    } finally {
++      if (mounted) setState(() => _submitting = false);
++    }
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    // Partner already answered banner
++    final partnerUid = widget.round.partnerOf(widget.uid);
++    final partnerAnswered = widget.round.hasAnswered(partnerUid);
++
++    return Column(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        if (partnerAnswered) ...[
++          Container(
++            width: double.infinity,
++            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
++            margin: const EdgeInsets.only(bottom: 16),
++            decoration: BoxDecoration(
++              color: AppColors.purple.withValues(alpha: 0.15),
++              borderRadius: BorderRadius.circular(14),
++              border: Border.all(
++                  color: AppColors.purple.withValues(alpha: 0.3)),
++            ),
++            child: const Row(
++              children: [
++                Text('⚡', style: TextStyle(fontSize: 18)),
++                SizedBox(width: 10),
++                Expanded(
++                  child: Text(
++                    'Партнёр уже ответил. Твоя очередь!',
++                    style: TextStyle(
++                      color: AppColors.lavender,
++                      fontSize: 14,
++                      fontWeight: FontWeight.w500,
++                    ),
++                  ),
++                ),
++              ],
++            ),
++          ),
++        ],
++
++        // Answer input
++        if (_isChoice)
++          _buildChoiceOptions()
++        else
++          _buildTextInput(),
++
++        const SizedBox(height: 16),
++
++        // Submit button
++        SizedBox(
++          width: double.infinity,
++          child: GestureDetector(
++            onTap: _submitting ? null : _submit,
++            child: Container(
++              padding: const EdgeInsets.symmetric(vertical: 16),
++              decoration: BoxDecoration(
++                gradient: AppColors.purpleGradient,
++                borderRadius: BorderRadius.circular(16),
++                boxShadow: [
++                  BoxShadow(
++                    color: AppColors.purple.withValues(alpha: 0.4),
++                    blurRadius: 12,
++                    offset: const Offset(0, 4),
++                  ),
++                ],
++              ),
++              child: Center(
++                child: _submitting
++                    ? const SizedBox(
++                        width: 22,
++                        height: 22,
++                        child: CircularProgressIndicator(
++                            strokeWidth: 2, color: Colors.white),
++                      )
++                    : const Text(
++                        'Ответить',
++                        style: TextStyle(
++                          fontSize: 16,
++                          fontWeight: FontWeight.bold,
++                          color: Colors.white,
++                        ),
++                      ),
++              ),
++            ),
++          ),
++        ),
++      ],
++    );
++  }
++
++  Widget _buildTextInput() {
++    return Container(
++      decoration: BoxDecoration(
++        color: AppColors.bgCard,
++        borderRadius: BorderRadius.circular(16),
++        border: Border.all(color: AppColors.bgCardLight),
++      ),
++      child: TextField(
++        controller: _textCtrl,
++        maxLines: 4,
++        minLines: 3,
++        style: const TextStyle(
++            color: AppColors.textPrimary, fontSize: 15, height: 1.5),
++        decoration: const InputDecoration(
++          hintText: 'Напишите свой ответ...',
++          hintStyle: TextStyle(color: AppColors.textMuted),
++          contentPadding:
++              EdgeInsets.symmetric(horizontal: 16, vertical: 14),
++          border: InputBorder.none,
++        ),
++      ),
++    );
++  }
++
++  Widget _buildChoiceOptions() {
++    return Column(
++      children: widget.round.options.map((opt) {
++        final isSelected = _selectedOptionId == opt['id'];
++        return GestureDetector(
++          onTap: () => setState(() => _selectedOptionId = opt['id']),
++          child: Container(
++            margin: const EdgeInsets.only(bottom: 10),
++            padding:
++                const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
++            decoration: BoxDecoration(
++              color: isSelected
++                  ? AppColors.purple.withValues(alpha: 0.2)
++                  : AppColors.bgCard,
++              borderRadius: BorderRadius.circular(14),
++              border: Border.all(
++                color: isSelected
++                    ? AppColors.purple
++                    : AppColors.bgCardLight,
++                width: isSelected ? 2 : 1,
++              ),
++            ),
++            child: Row(
++              children: [
++                Expanded(
++                  child: Text(
++                    opt['text'] ?? '',
++                    style: TextStyle(
++                      color: isSelected
++                          ? AppColors.textPrimary
++                          : AppColors.textSecondary,
++                      fontSize: 15,
++                      fontWeight: isSelected
++                          ? FontWeight.w600
++                          : FontWeight.normal,
++                    ),
++                  ),
++                ),
++                if (isSelected)
++                  const Icon(Icons.check_circle_rounded,
++                      color: AppColors.purple, size: 20),
++              ],
++            ),
++          ),
++        );
++      }).toList(),
++    );
++  }
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Waiting View (I answered, waiting for partner)
++// ─────────────────────────────────────────────────────────────────────────────
++
++class _WaitingView extends StatelessWidget {
++  const _WaitingView({required this.round, required this.uid});
++  final QuizRound round;
++  final String uid;
++
++  @override
++  Widget build(BuildContext context) {
++    return Container(
++      width: double.infinity,
++      padding: const EdgeInsets.all(28),
++      decoration: BoxDecoration(
++        color: AppColors.bgCard,
++        borderRadius: BorderRadius.circular(20),
++        border: Border.all(color: AppColors.bgCardLight),
++      ),
++      child: Column(
++        children: [
++          // Animated dots indicator
++          const _PulsingDots(),
++          const SizedBox(height: 20),
++          const Text(
++            'Ответ сохранён ✓',
++            style: TextStyle(
++              fontSize: 18,
++              fontWeight: FontWeight.bold,
++              color: AppColors.textPrimary,
++            ),
++          ),
++          const SizedBox(height: 8),
++          const Text(
++            'Ждём ответа партнёра...\nКак только он(а) ответит — увидите оба ответа',
++            style: TextStyle(
++              fontSize: 13,
++              color: AppColors.textSecondary,
++              height: 1.5,
++            ),
++            textAlign: TextAlign.center,
++          ),
++          const SizedBox(height: 16),
++          Text(
++            'Мой ответ: ${round.answerOf(uid) ?? ""}',
++            style: const TextStyle(
++              fontSize: 13,
++              color: AppColors.lavender,
++              fontStyle: FontStyle.italic,
++            ),
++            textAlign: TextAlign.center,
++          ),
++        ],
++      ),
++    );
++  }
++}
++
++class _PulsingDots extends StatefulWidget {
++  const _PulsingDots();
++
++  @override
++  State<_PulsingDots> createState() => _PulsingDotsState();
++}
++
++class _PulsingDotsState extends State<_PulsingDots>
++    with SingleTickerProviderStateMixin {
++  late AnimationController _ctrl;
++  late Animation<double> _anim;
++
++  @override
++  void initState() {
++    super.initState();
++    _ctrl = AnimationController(
++        vsync: this, duration: const Duration(milliseconds: 1200))
++      ..repeat(reverse: true);
++    _anim = Tween<double>(begin: 0.3, end: 1.0).animate(
++      CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
++    );
++  }
++
++  @override
++  void dispose() {
++    _ctrl.dispose();
++    super.dispose();
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return AnimatedBuilder(
++      animation: _anim,
++      builder: (_, __) => Row(
++        mainAxisAlignment: MainAxisAlignment.center,
++        children: List.generate(3, (i) {
++          final offset = (i / 3 * 2 * pi);
++          final value =
++              (sin(_anim.value * pi + offset) * 0.5 + 0.5).clamp(0.3, 1.0);
++          return Container(
++            margin: const EdgeInsets.symmetric(horizontal: 5),
++            width: 10,
++            height: 10,
++            decoration: BoxDecoration(
++              color: AppColors.purple.withValues(alpha: value),
++              shape: BoxShape.circle,
++            ),
++          );
++        }),
++      ),
++    );
++  }
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Reveal View (both answered)
++// ─────────────────────────────────────────────────────────────────────────────
++
++class _RevealView extends StatelessWidget {
++  const _RevealView({
++    required this.round,
++    required this.uid,
++  });
++  final QuizRound round;
++  final String uid;
++
++  @override
++  Widget build(BuildContext context) {
++    final partnerUid = round.partnerOf(uid);
++    final myAnswer = round.answerOf(uid) ?? '';
++    final partnerAnswer = round.answerOf(partnerUid) ?? '';
++    final isChoice = round.answerType == 'choice';
++    final matched = round.matched;
++
++    // Resolve option labels for choice type
++    String resolveLabel(String answerId) {
++      if (!isChoice) return answerId;
++      final opt =
++          round.options.where((o) => o['id'] == answerId).firstOrNull;
++      return opt?['text'] ?? answerId;
++    }
++
++    return SingleChildScrollView(
++      padding: const EdgeInsets.symmetric(horizontal: 20),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          const SizedBox(height: 16),
++          Row(
++            children: [
++              GestureDetector(
++                onTap: () => Navigator.pop(context),
++                child: Container(
++                  padding: const EdgeInsets.all(8),
++                  decoration: BoxDecoration(
++                    color: AppColors.bgCardLight,
++                    borderRadius: BorderRadius.circular(12),
++                  ),
++                  child: const Icon(Icons.arrow_back_rounded,
++                      color: AppColors.textPrimary, size: 20),
++                ),
++              ),
++              const SizedBox(width: 12),
++              const Text(
++                'Результат',
++                style: TextStyle(
++                  fontSize: 20,
++                  fontWeight: FontWeight.bold,
++                  color: AppColors.textPrimary,
++                ),
++              ),
++            ],
++          ),
++          const SizedBox(height: 24),
++
++          // Question recap
++          _QuestionCard(round: round),
++
++          const SizedBox(height: 20),
++
++          // Match banner (for choice)
++          if (isChoice && matched != null) ...[
++            Container(
++              width: double.infinity,
++              padding:
++                  const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
++              decoration: BoxDecoration(
++                gradient: matched
++                    ? const LinearGradient(
++                        colors: [Color(0xFF2E7D32), Color(0xFF43A047)],
++                        begin: Alignment.topLeft,
++                        end: Alignment.bottomRight,
++                      )
++                    : const LinearGradient(
++                        colors: [Color(0xFF5C6BC0), Color(0xFF7986CB)],
++                        begin: Alignment.topLeft,
++                        end: Alignment.bottomRight,
++                      ),
++                borderRadius: BorderRadius.circular(16),
++              ),
++              child: Column(
++                children: [
++                  Text(
++                    matched ? '❤️ Совпало!' : '🌊 Не совпало',
++                    style: const TextStyle(
++                      fontSize: 22,
++                      fontWeight: FontWeight.bold,
++                      color: Colors.white,
++                    ),
++                  ),
++                  const SizedBox(height: 4),
++                  Text(
++                    matched
++                        ? 'Вы думаете одинаково в этом вопросе!'
++                        : 'Но теперь вы знаете друг друга лучше',
++                    style: TextStyle(
++                      fontSize: 13,
++                      color: Colors.white.withValues(alpha: 0.85),
++                    ),
++                    textAlign: TextAlign.center,
++                  ),
++                ],
++              ),
++            ),
++            const SizedBox(height: 16),
++          ],
++
++          // Answers
++          _buildAnswerCard(
++            label: 'Твой ответ',
++            answer: resolveLabel(myAnswer),
++            color: AppColors.purple,
++          ),
++          const SizedBox(height: 10),
++          _buildAnswerCard(
++            label: 'Ответ партнёра',
++            answer: resolveLabel(partnerAnswer),
++            color: AppColors.roseAccent,
++          ),
++
++          const SizedBox(height: 28),
++
++          // Next question button
++          SizedBox(
++            width: double.infinity,
++            child: GestureDetector(
++              onTap: () => Navigator.pop(context),
++              child: Container(
++                padding: const EdgeInsets.symmetric(vertical: 16),
++                decoration: BoxDecoration(
++                  gradient: AppColors.purpleGradient,
++                  borderRadius: BorderRadius.circular(16),
++                  boxShadow: [
++                    BoxShadow(
++                      color: AppColors.purple.withValues(alpha: 0.4),
++                      blurRadius: 12,
++                      offset: const Offset(0, 4),
++                    ),
++                  ],
++                ),
++                child: const Center(
++                  child: Text(
++                    'Следующий вопрос',
++                    style: TextStyle(
++                      fontSize: 16,
++                      fontWeight: FontWeight.bold,
++                      color: Colors.white,
++                    ),
++                  ),
++                ),
++              ),
++            ),
++          ),
++          const SizedBox(height: 32),
++        ],
++      ),
++    );
++  }
++
++  Widget _buildAnswerCard({
++    required String label,
++    required String answer,
++    required Color color,
++  }) {
++    return Container(
++      width: double.infinity,
++      padding: const EdgeInsets.all(18),
++      decoration: BoxDecoration(
++        color: AppColors.bgCard,
++        borderRadius: BorderRadius.circular(16),
++        border: Border.all(color: color.withValues(alpha: 0.3)),
++      ),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Text(
++            label,
++            style: TextStyle(
++              fontSize: 12,
++              color: color,
++              fontWeight: FontWeight.w600,
++              letterSpacing: 0.5,
++            ),
++          ),
++          const SizedBox(height: 8),
++          Text(
++            answer,
++            style: const TextStyle(
++              fontSize: 16,
++              color: AppColors.textPrimary,
++              height: 1.4,
++            ),
++          ),
++        ],
++      ),
++    );
++  }
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Completed Rounds History Section
++// ─────────────────────────────────────────────────────────────────────────────
++
++class _CompletedRoundsSection extends StatelessWidget {
++  const _CompletedRoundsSection({
++    required this.coupleId,
++    required this.uid,
++    required this.quizService,
++  });
++
++  final String coupleId;
++  final String uid;
++  final QuizService quizService;
++
++  @override
++  Widget build(BuildContext context) {
++    return Column(
++      crossAxisAlignment: CrossAxisAlignment.start,
++      children: [
++        const Text(
++          'История вопросов',
++          style: TextStyle(
++            fontSize: 18,
++            fontWeight: FontWeight.bold,
++            color: AppColors.textPrimary,
++          ),
++        ),
++        const SizedBox(height: 12),
++        StreamBuilder<List<QuizRound>>(
++          stream: quizService.watchCompletedRounds(coupleId, limit: 10),
++          builder: (context, snap) {
++            if (snap.connectionState == ConnectionState.waiting) {
++              return const Padding(
++                padding: EdgeInsets.symmetric(vertical: 24),
++                child: Center(
++                    child: CircularProgressIndicator(color: AppColors.purple)),
++              );
++            }
++            final rounds = snap.data ?? [];
++            if (rounds.isEmpty) {
++              return Container(
++                width: double.infinity,
++                padding: const EdgeInsets.symmetric(
++                    vertical: 28, horizontal: 20),
++                decoration: BoxDecoration(
++                  color: AppColors.bgCard,
++                  borderRadius: BorderRadius.circular(16),
++                  border: Border.all(color: AppColors.bgCardLight),
++                ),
++                child: const Column(
++                  children: [
++                    Text('🎲', style: TextStyle(fontSize: 32)),
++                    SizedBox(height: 10),
++                    Text(
++                      'Пока нет завершённых вопросов',
++                      style: TextStyle(
++                        fontSize: 14,
++                        color: AppColors.textSecondary,
++                      ),
++                    ),
++                  ],
++                ),
++              );
++            }
++            return Column(
++              children: rounds.map((r) => _HistoryCard(round: r, uid: uid)).toList(),
++            );
++          },
++        ),
++      ],
++    );
++  }
++}
++
++class _HistoryCard extends StatelessWidget {
++  const _HistoryCard({required this.round, required this.uid});
++  final QuizRound round;
++  final String uid;
++
++  @override
++  Widget build(BuildContext context) {
++    final cat = kQuizCategories.firstWhere(
++      (c) => c.id == round.category,
++      orElse: () => kQuizCategories.first,
++    );
++    final isChoice = round.answerType == 'choice';
++    final matched = round.matched;
++
++    return Container(
++      margin: const EdgeInsets.only(bottom: 10),
++      padding: const EdgeInsets.all(14),
++      decoration: BoxDecoration(
++        color: AppColors.bgCard,
++        borderRadius: BorderRadius.circular(14),
++        border: Border.all(color: AppColors.bgCardLight),
++      ),
++      child: Row(
++        children: [
++          Text(cat.emoji, style: const TextStyle(fontSize: 22)),
++          const SizedBox(width: 12),
++          Expanded(
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Text(
++                  round.questionText,
++                  maxLines: 2,
++                  overflow: TextOverflow.ellipsis,
++                  style: const TextStyle(
++                    fontSize: 13,
++                    color: AppColors.textPrimary,
++                    height: 1.3,
++                  ),
++                ),
++                const SizedBox(height: 4),
++                if (isChoice && matched != null)
++                  Text(
++                    matched ? '❤️ Совпало' : '🌊 Не совпало',
++                    style: TextStyle(
++                      fontSize: 11,
++                      color:
++                          matched ? AppColors.statusResolved : AppColors.lavender,
++                    ),
++                  ),
++              ],
++            ),
++          ),
++          const Icon(Icons.chevron_right_rounded,
++              color: AppColors.textMuted, size: 18),
++        ],
++      ),
++    );
++  }
++}
+diff --git a/pairapp_mobile/lib/shared/data/quiz_questions_data.dart b/pairapp_mobile/lib/shared/data/quiz_questions_data.dart
+new file mode 100644
+index 0000000..83a1f3d
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/data/quiz_questions_data.dart
+@@ -0,0 +1,1095 @@
++import 'package:flutter/material.dart';
++
++import '../models/quiz_question.dart';
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Категории
++// ─────────────────────────────────────────────────────────────────────────────
++
++const List<QuizCategory> kQuizCategories = [
++  QuizCategory(
++    id: 'know_each_other',
++    title: 'Насколько вы знаете\nдруг друга',
++    emoji: '💞',
++    gradient: [0xFF7C5CFC, 0xFF9D7FFF],
++  ),
++  QuizCategory(
++    id: 'deep',
++    title: 'Глубокие вопросы',
++    emoji: '🌙',
++    gradient: [0xFF2D3561, 0xFF5C6BC0],
++  ),
++  QuizCategory(
++    id: 'funny',
++    title: 'Смешное',
++    emoji: '😂',
++    gradient: [0xFFFF8A65, 0xFFFFB74D],
++  ),
++  QuizCategory(
++    id: 'food',
++    title: 'Еда и привычки',
++    emoji: '🍕',
++    gradient: [0xFFEF5350, 0xFFFF7043],
++  ),
++  QuizCategory(
++    id: 'lifestyle',
++    title: 'Быт и характер',
++    emoji: '🏡',
++    gradient: [0xFF26A69A, 0xFF4DB6AC],
++  ),
++  QuizCategory(
++    id: 'dreams',
++    title: 'Мечты и планы',
++    emoji: '✈️',
++    gradient: [0xFF1E88E5, 0xFF42A5F5],
++  ),
++  QuizCategory(
++    id: 'romance',
++    title: 'Романтика',
++    emoji: '🔥',
++    gradient: [0xFFFF6B9D, 0xFFFF8A65],
++  ),
++  QuizCategory(
++    id: 'random',
++    title: 'Случайный вопрос',
++    emoji: '🎲',
++    gradient: [0xFF7C5CFC, 0xFFFF6B9D],
++  ),
++  QuizCategory(
++    id: 'intimate',
++    title: 'Близость 18+',
++    emoji: '🔞',
++    gradient: [0xFF880E4F, 0xFFAD1457],
++    isAdult: true,
++  ),
++];
++
++Color quizCategoryColor(QuizCategory cat) =>
++    Color(cat.gradient[0]);
++
++LinearGradient quizCategoryGradient(QuizCategory cat) => LinearGradient(
++      colors: cat.gradient.map((c) => Color(c)).toList(),
++      begin: Alignment.topLeft,
++      end: Alignment.bottomRight,
++    );
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Банк вопросов
++// ─────────────────────────────────────────────────────────────────────────────
++
++const List<QuizQuestion> kQuizQuestions = [
++  // ── 💞 Насколько вы знаете друг друга (16 вопросов) ──────────────────────
++
++  QuizQuestion(
++    id: 'keo_01',
++    category: 'know_each_other',
++    text: 'Какое моё любимое блюдо на завтрак?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_02',
++    category: 'know_each_other',
++    text: 'Назови мой самый большой страх.',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_03',
++    category: 'know_each_other',
++    text: 'Что меня раздражает больше всего в людях?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_04',
++    category: 'know_each_other',
++    text: 'Как я провожу идеальный выходной день?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_05',
++    category: 'know_each_other',
++    text: 'Какое моё любимое время года?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'spring', text: '🌸 Весна'),
++      QuizOption(id: 'summer', text: '☀️ Лето'),
++      QuizOption(id: 'autumn', text: '🍂 Осень'),
++      QuizOption(id: 'winter', text: '❄️ Зима'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'keo_06',
++    category: 'know_each_other',
++    text: 'Какую музыку я слушаю, когда грустно?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_07',
++    category: 'know_each_other',
++    text: 'Что меня заряжает после тяжёлого дня?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_08',
++    category: 'know_each_other',
++    text: 'Как меня зовут мои ближайшие друзья?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_09',
++    category: 'know_each_other',
++    text: 'Какой фильм я могу пересматривать бесконечно?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_10',
++    category: 'know_each_other',
++    text: 'Что я обычно делаю в первые минуты после пробуждения?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_11',
++    category: 'know_each_other',
++    text: 'Какой у меня стиль общения в конфликте?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'talk', text: '🗣 Сразу говорю'),
++      QuizOption(id: 'think', text: '🧘 Сначала остываю'),
++      QuizOption(id: 'silence', text: '🤐 Замыкаюсь'),
++      QuizOption(id: 'jokes', text: '😄 Разряжаю юмором'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'keo_12',
++    category: 'know_each_other',
++    text: 'Назови мою любимую книгу или жанр.',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_13',
++    category: 'know_each_other',
++    text: 'Что я делаю, когда хочу побыть один(а)?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_14',
++    category: 'know_each_other',
++    text: 'Какую работу мечты я бы выбрал(а), если бы деньги не имели значения?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_15',
++    category: 'know_each_other',
++    text: 'Какой запах ассоциируется у меня с детством?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'keo_16',
++    category: 'know_each_other',
++    text: 'Что мне труднее всего: начать что-то новое, закончить начатое или просить о помощи?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'start', text: '🚀 Начать'),
++      QuizOption(id: 'finish', text: '🏁 Закончить'),
++      QuizOption(id: 'ask', text: '🙋 Просить помощи'),
++    ],
++  ),
++
++  // ── 🌙 Глубокие вопросы (15 вопросов) ───────────────────────────────────
++
++  QuizQuestion(
++    id: 'deep_01',
++    category: 'deep',
++    text: 'Что для тебя важнее: честность или тактичность?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'honesty', text: '💬 Честность'),
++      QuizOption(id: 'tact', text: '🕊 Тактичность'),
++      QuizOption(id: 'both', text: '⚖️ Зависит от ситуации'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'deep_02',
++    category: 'deep',
++    text: 'Что ты хотел(а) бы, чтобы о тебе помнили люди?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'deep_03',
++    category: 'deep',
++    text: 'Если бы ты мог(ла) изменить одно решение в своей жизни — что бы это было?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'deep_04',
++    category: 'deep',
++    text: 'Что для тебя значит «счастливая жизнь»?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'deep_05',
++    category: 'deep',
++    text: 'В чём твоя самая большая сила как человека?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'deep_06',
++    category: 'deep',
++    text: 'Чего ты больше всего боишься потерять?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'deep_07',
++    category: 'deep',
++    text: 'Что ты делаешь, когда теряешь веру в себя?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'deep_08',
++    category: 'deep',
++    text: 'Какой урок жизни ты усвоил(а) сложнее всего?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'deep_09',
++    category: 'deep',
++    text: 'Что тебя по-настоящему вдохновляет?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'deep_10',
++    category: 'deep',
++    text: 'Есть ли что-то, о чём ты редко говоришь вслух?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'deep_11',
++    category: 'deep',
++    text: 'Что ты думаешь об отношениях на расстоянии?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'deep_12',
++    category: 'deep',
++    text: 'Как ты относишься к идее прожить жизнь без компромиссов?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'deep_13',
++    category: 'deep',
++    text: 'Где ты черпаешь силы, когда всё идёт не так?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'deep_14',
++    category: 'deep',
++    text: 'Что для тебя важнее: деньги, свобода или любовь?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'money', text: '💰 Деньги'),
++      QuizOption(id: 'freedom', text: '🌊 Свобода'),
++      QuizOption(id: 'love', text: '❤️ Любовь'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'deep_15',
++    category: 'deep',
++    text: 'Если бы ты написал(а) книгу о своей жизни — как бы она называлась?',
++    answerType: QuizAnswerType.openText,
++  ),
++
++  // ── 😂 Смешное (14 вопросов) ──────────────────────────────────────────────
++
++  QuizQuestion(
++    id: 'funny_01',
++    category: 'funny',
++    text: 'Суперсила или способность читать мысли?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'power', text: '💪 Суперсила'),
++      QuizOption(id: 'minds', text: '🧠 Читать мысли'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'funny_02',
++    category: 'funny',
++    text: 'Какую смешную привычку в себе ты замечаешь?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'funny_03',
++    category: 'funny',
++    text: 'Что ты делаешь первым делом, когда никого нет дома?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'funny_04',
++    category: 'funny',
++    text: 'Если бы ты был(а) животным — кем бы ты стал(а)?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'funny_05',
++    category: 'funny',
++    text: 'Каким был твой самый неловкий момент в жизни?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'funny_06',
++    category: 'funny',
++    text: 'Что бы ты купил(а) первым делом, если бы выиграл(а) миллион?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'funny_07',
++    category: 'funny',
++    text: 'Ты скорее кот или собака?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'cat', text: '🐱 Кот'),
++      QuizOption(id: 'dog', text: '🐶 Собака'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'funny_08',
++    category: 'funny',
++    text: 'Какой странный факт о себе ты знаешь?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'funny_09',
++    category: 'funny',
++    text: 'Что ты делаешь, когда думаешь, что никто не смотрит?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'funny_10',
++    category: 'funny',
++    text: 'Пицца или бургер?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'pizza', text: '🍕 Пицца'),
++      QuizOption(id: 'burger', text: '🍔 Бургер'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'funny_11',
++    category: 'funny',
++    text: 'Какое прозвище тебе давали в детстве?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'funny_12',
++    category: 'funny',
++    text: 'Если бы твоя жизнь была сериалом — в каком жанре?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'funny_13',
++    category: 'funny',
++    text: 'Что ты ненавидишь делать, но всё равно делаешь?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'funny_14',
++    category: 'funny',
++    text: 'Ранняя пташка или ночная сова?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'early', text: '🌅 Ранняя пташка'),
++      QuizOption(id: 'night', text: '🦉 Ночная сова'),
++    ],
++  ),
++
++  // ── 🍕 Еда и привычки (14 вопросов) ─────────────────────────────────────
++
++  QuizQuestion(
++    id: 'food_01',
++    category: 'food',
++    text: 'Ты скорее сладкоежка или любишь солёное/острое?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'sweet', text: '🍰 Сладкое'),
++      QuizOption(id: 'salty', text: '🧂 Солёное'),
++      QuizOption(id: 'spicy', text: '🌶 Острое'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'food_02',
++    category: 'food',
++    text: 'Что ты готовишь лучше всего?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'food_03',
++    category: 'food',
++    text: 'Кофе или чай утром?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'coffee', text: '☕ Кофе'),
++      QuizOption(id: 'tea', text: '🍵 Чай'),
++      QuizOption(id: 'neither', text: '💧 Ни то, ни другое'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'food_04',
++    category: 'food',
++    text: 'Какое блюдо из детства ты до сих пор любишь?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'food_05',
++    category: 'food',
++    text: 'Ты любишь готовить или предпочитаешь, чтобы готовили для тебя?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'cook', text: '👨‍🍳 Люблю готовить'),
++      QuizOption(id: 'eat', text: '🍽 Когда готовят для меня'),
++      QuizOption(id: 'both', text: '😊 По-разному'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'food_06',
++    category: 'food',
++    text: 'Есть ли продукт, который ты категорически не ешь?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'food_07',
++    category: 'food',
++    text: 'Ресторан или домашняя еда в уютной обстановке?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'restaurant', text: '🍽 Ресторан'),
++      QuizOption(id: 'home', text: '🏠 Дома'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'food_08',
++    category: 'food',
++    text: 'Ты ешь завтрак или пропускаешь его?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'always', text: '✅ Всегда ем'),
++      QuizOption(id: 'sometimes', text: '🤷 Иногда'),
++      QuizOption(id: 'skip', text: '❌ Пропускаю'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'food_09',
++    category: 'food',
++    text: 'Какая кухня мира тебе ближе всего?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'food_10',
++    category: 'food',
++    text: 'Снеки ночью — это норма или грех?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'norm', text: '🌙 Норма, жизнь коротка'),
++      QuizOption(id: 'sin', text: '😅 Грех, но всё равно ем'),
++      QuizOption(id: 'never', text: '🧘 Никогда не ем ночью'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'food_11',
++    category: 'food',
++    text: 'Как часто ты пьёшь воду в течение дня?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'food_12',
++    category: 'food',
++    text: 'Есть ли у тебя ритуал перед едой (фото блюда, молитва, что-то ещё)?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'food_13',
++    category: 'food',
++    text: 'Торт или мороженое?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'cake', text: '🎂 Торт'),
++      QuizOption(id: 'icecream', text: '🍦 Мороженое'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'food_14',
++    category: 'food',
++    text: 'Что ты обычно заказываешь в кафе, когда не можешь выбрать?',
++    answerType: QuizAnswerType.openText,
++  ),
++
++  // ── 🏡 Быт и характер (14 вопросов) ─────────────────────────────────────
++
++  QuizQuestion(
++    id: 'life_01',
++    category: 'lifestyle',
++    text: 'Ты жаворонок или сова — в бытовом смысле (уборка, дела)?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'morning', text: '🌅 Делаю дела с утра'),
++      QuizOption(id: 'evening', text: '🌙 Вечером активнее'),
++      QuizOption(id: 'deadline', text: '⏰ По дедлайну'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'life_02',
++    category: 'lifestyle',
++    text: 'Порядок в доме для тебя — это важно или терпимо?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'very', text: '🧹 Очень важно'),
++      QuizOption(id: 'medium', text: '😌 Важно, но не сверх'),
++      QuizOption(id: 'relax', text: '😎 Главное — уют, не чистота'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'life_03',
++    category: 'lifestyle',
++    text: 'Что ты делаешь, когда устал(а) и не хочешь ничего делать?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'life_04',
++    category: 'lifestyle',
++    text: 'Ты привыкаешь к новому быстро или медленно?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'fast', text: '⚡ Быстро'),
++      QuizOption(id: 'slow', text: '🐢 Медленно'),
++      QuizOption(id: 'depends', text: '🤷 Зависит от ситуации'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'life_05',
++    category: 'lifestyle',
++    text: 'Как ты реагируешь, когда что-то идёт не по плану?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'life_06',
++    category: 'lifestyle',
++    text: 'Ты скорее плановик или спонтанный(ая)?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'planner', text: '📅 Плановик'),
++      QuizOption(id: 'spontaneous', text: '🎲 Спонтанный(ая)'),
++      QuizOption(id: 'both', text: '🔄 По настроению'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'life_07',
++    category: 'lifestyle',
++    text: 'Что тебе сложнее: говорить «нет» или говорить «мне нужна помощь»?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'no', text: '🚫 Говорить «нет»'),
++      QuizOption(id: 'help', text: '🙋 Просить помощи'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'life_08',
++    category: 'lifestyle',
++    text: 'Ты склонен(на) беспокоиться о будущем или живёшь настоящим?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'life_09',
++    category: 'lifestyle',
++    text: 'Как ты справляешься со стрессом?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'life_10',
++    category: 'lifestyle',
++    text: 'Ты чаще принимаешь решения сердцем или головой?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'heart', text: '❤️ Сердцем'),
++      QuizOption(id: 'head', text: '🧠 Головой'),
++      QuizOption(id: 'both', text: '⚖️ Стараюсь совмещать'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'life_11',
++    category: 'lifestyle',
++    text: 'Что тебя больше утомляет: физический труд или общение с людьми?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'physical', text: '💪 Физический труд'),
++      QuizOption(id: 'social', text: '👥 Социальное общение'),
++      QuizOption(id: 'equal', text: '😅 Одинаково'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'life_12',
++    category: 'lifestyle',
++    text: 'Ты легко просишь прощения или это даётся с трудом?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'life_13',
++    category: 'lifestyle',
++    text: 'Какая черта характера в тебе самая сильная?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'life_14',
++    category: 'lifestyle',
++    text: 'Что тебя могло бы вывести из себя дома?',
++    answerType: QuizAnswerType.openText,
++  ),
++
++  // ── ✈️ Мечты и планы (14 вопросов) ───────────────────────────────────────
++
++  QuizQuestion(
++    id: 'dreams_01',
++    category: 'dreams',
++    text: 'Какая страна у тебя в топе списка для путешествий?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'dreams_02',
++    category: 'dreams',
++    text: 'Где ты видишь себя через 5 лет?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'dreams_03',
++    category: 'dreams',
++    text: 'Есть ли у тебя мечта, которую ты ещё не осуществил(а)?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'dreams_04',
++    category: 'dreams',
++    text: 'Ты хочешь жить в городе или за городом в будущем?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'city', text: '🏙 В городе'),
++      QuizOption(id: 'suburbs', text: '🏡 За городом'),
++      QuizOption(id: 'both', text: '🔄 Иметь оба варианта'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'dreams_05',
++    category: 'dreams',
++    text: 'Ты когда-нибудь хотел(а) сменить профессию? На что?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'dreams_06',
++    category: 'dreams',
++    text: 'Хочешь ли ты открыть своё дело когда-нибудь?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'yes', text: '✅ Да, это мечта'),
++      QuizOption(id: 'maybe', text: '🤔 Думаю об этом'),
++      QuizOption(id: 'no', text: '❌ Нет, не для меня'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'dreams_07',
++    category: 'dreams',
++    text: 'Что из детских мечт ты всё ещё хочешь осуществить?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'dreams_08',
++    category: 'dreams',
++    text: 'Какое приключение ты хотел(а) бы пережить вместе со мной?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'dreams_09',
++    category: 'dreams',
++    text: 'Ты хочешь детей? Сколько?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'dreams_10',
++    category: 'dreams',
++    text: 'Если бы деньги не были проблемой — как бы ты провёл(а) год жизни?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'dreams_11',
++    category: 'dreams',
++    text: 'Какой навык ты мечтаешь освоить?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'dreams_12',
++    category: 'dreams',
++    text: 'Хочешь ли ты когда-нибудь переехать в другую страну?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'yes', text: '✈️ Да, хочу'),
++      QuizOption(id: 'maybe', text: '🌐 Возможно'),
++      QuizOption(id: 'no', text: '🏠 Нет, здесь мой дом'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'dreams_13',
++    category: 'dreams',
++    text: 'Что бы ты хотел(а) успеть до 40 лет?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'dreams_14',
++    category: 'dreams',
++    text: 'Есть ли что-то, чего ты ждёшь прямо сейчас с нетерпением?',
++    answerType: QuizAnswerType.openText,
++  ),
++
++  // ── 🔥 Романтика (14 вопросов) ───────────────────────────────────────────
++
++  QuizQuestion(
++    id: 'romance_01',
++    category: 'romance',
++    text: 'Что для тебя идеальное свидание?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'romance_02',
++    category: 'romance',
++    text: 'Какой жест любви тебе говорит «я думаю о тебе»?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'romance_03',
++    category: 'romance',
++    text: 'Какой язык любви ближе тебе?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'words', text: '💬 Слова признания'),
++      QuizOption(id: 'touch', text: '🤗 Прикосновения'),
++      QuizOption(id: 'gifts', text: '🎁 Подарки'),
++      QuizOption(id: 'service', text: '🛠 Помощь делом'),
++      QuizOption(id: 'time', text: '⏱ Время вместе'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'romance_04',
++    category: 'romance',
++    text: 'Что тебя удивило бы приятно в отношениях?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'romance_05',
++    category: 'romance',
++    text: 'Ты скорее тот, кто инициирует встречи, или ждёшь инициативы?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'initiates', text: '🚀 Инициирую сам(а)'),
++      QuizOption(id: 'waits', text: '🌸 Жду инициативы'),
++      QuizOption(id: 'depends', text: '🔄 По-разному'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'romance_06',
++    category: 'romance',
++    text: 'Какой момент в наших отношениях ты вспоминаешь с улыбкой?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'romance_07',
++    category: 'romance',
++    text: 'Что для тебя важнее в паре: общие интересы или взаимное уважение?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'interests', text: '🎯 Общие интересы'),
++      QuizOption(id: 'respect', text: '🙏 Взаимное уважение'),
++      QuizOption(id: 'both', text: '💞 Оба одинаково'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'romance_08',
++    category: 'romance',
++    text: 'Каким комплиментом ты особенно дорожишь?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'romance_09',
++    category: 'romance',
++    text: 'Что для тебя значит «чувствовать себя любимым(ой)»?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'romance_10',
++    category: 'romance',
++    text: 'Ты любишь сюрпризы или лучше знать заранее?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'surprise', text: '🎉 Люблю сюрпризы'),
++      QuizOption(id: 'plan', text: '📋 Лучше знать заранее'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'romance_11',
++    category: 'romance',
++    text: 'Как ты понимаешь, что влюбился(лась)?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'romance_12',
++    category: 'romance',
++    text: 'Что для тебя самое сложное в отношениях?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'romance_13',
++    category: 'romance',
++    text: 'Какой маленький знак внимания делает твой день лучше?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'romance_14',
++    category: 'romance',
++    text: 'Хочешь ли ты, чтобы мы делали что-то новое вместе чаще?',
++    answerType: QuizAnswerType.openText,
++  ),
++
++  // ── 🔞 Близость 18+ (30 вопросов) ────────────────────────────────────────
++
++  QuizQuestion(
++    id: 'int_01',
++    category: 'intimate',
++    text: 'Что в близости помогает тебе чувствовать себя желанным(ой)?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_02',
++    category: 'intimate',
++    text: 'Какой комплимент в интимный момент тебе особенно приятно слышать?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_03',
++    category: 'intimate',
++    text: 'Что для тебя важнее: спонтанность или атмосфера?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'spontaneous', text: '⚡ Спонтанность'),
++      QuizOption(id: 'atmosphere', text: '🕯 Атмосфера'),
++      QuizOption(id: 'both', text: '💫 Люблю оба варианта'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'int_04',
++    category: 'intimate',
++    text: 'Какая форма нежности быстрее всего сближает тебя с партнёром?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_05',
++    category: 'intimate',
++    text: 'О чём тебе хотелось бы говорить честнее, но без давления?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_06',
++    category: 'intimate',
++    text: 'Какая граница для тебя важна, чтобы чувствовать себя спокойно?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_07',
++    category: 'intimate',
++    text: 'Что из романтики для тебя плавно переходит в желание?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_08',
++    category: 'intimate',
++    text: 'Какой вечер для тебя был бы идеальным продолжением свидания?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_09',
++    category: 'intimate',
++    text: 'Что помогает тебе расслабиться и быть ближе?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_10',
++    category: 'intimate',
++    text: 'Что тебе хотелось бы попробовать, если оба чувствуют себя комфортно?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_11',
++    category: 'intimate',
++    text: 'Какое время суток ты предпочитаешь для близости?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'morning', text: '🌅 Утро'),
++      QuizOption(id: 'day', text: '☀️ День'),
++      QuizOption(id: 'evening', text: '🌇 Вечер'),
++      QuizOption(id: 'night', text: '🌙 Поздняя ночь'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'int_12',
++    category: 'intimate',
++    text: 'Что для тебя важнее: инициатива партнёра или взаимная атмосфера?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'initiative', text: '🙌 Инициатива партнёра'),
++      QuizOption(id: 'atmosphere', text: '🕯 Общая атмосфера'),
++      QuizOption(id: 'both', text: '❤️ Оба равно важны'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'int_13',
++    category: 'intimate',
++    text: 'Как ты понимаешь, что партнёр рядом и это твоё безопасное пространство?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_14',
++    category: 'intimate',
++    text: 'Что для тебя означает «быть уязвимым(ой)» с партнёром?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_15',
++    category: 'intimate',
++    text: 'Ты предпочитаешь нежность или страсть — или это зависит от момента?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'tender', text: '🌸 Нежность'),
++      QuizOption(id: 'passion', text: '🔥 Страсть'),
++      QuizOption(id: 'moment', text: '🔄 Зависит от момента'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'int_16',
++    category: 'intimate',
++    text: 'Какой жест партнёра делает тебя счастливее даже вне близости?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_17',
++    category: 'intimate',
++    text: 'Что для тебя важнее в интимной жизни пары: частота или качество?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'frequency', text: '📆 Частота'),
++      QuizOption(id: 'quality', text: '✨ Качество'),
++      QuizOption(id: 'both', text: '💞 Хочу и то, и то'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'int_18',
++    category: 'intimate',
++    text: 'Есть ли что-то, о чём тебе трудно говорить вслух, но ты хотел(а) бы, чтобы партнёр знал?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_19',
++    category: 'intimate',
++    text: 'Что для тебя является знаком, что партнёр чувствует себя комфортно рядом?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_20',
++    category: 'intimate',
++    text: 'Как ты показываешь, что хочешь близости, когда сложно сказать об этом прямо?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_21',
++    category: 'intimate',
++    text: 'Что тебе помогает открыться и не бояться осуждения?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_22',
++    category: 'intimate',
++    text: 'Объятия после близости — это обязательно или по настроению?',
++    answerType: QuizAnswerType.choice,
++    options: [
++      QuizOption(id: 'always', text: '🤗 Всегда обязательно'),
++      QuizOption(id: 'mood', text: '🌊 По настроению'),
++      QuizOption(id: 'rare', text: '🧘 Мне нужно пространство'),
++    ],
++  ),
++  QuizQuestion(
++    id: 'int_23',
++    category: 'intimate',
++    text: 'Что для тебя значит чувствовать эмоциональную близость с партнёром?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_24',
++    category: 'intimate',
++    text: 'Есть ли что-то в физической близости, что для тебя категорически некомфортно?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_25',
++    category: 'intimate',
++    text: 'Что для тебя делает момент близости по-настоящему особенным?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_26',
++    category: 'intimate',
++    text: 'Как ты реагируешь, когда партнёр говорит «нет» — как воспринимаешь это?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_27',
++    category: 'intimate',
++    text: 'Есть ли у тебя фантазия, которую ты пока не решался(лась) озвучить?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_28',
++    category: 'intimate',
++    text: 'Что ты чувствуешь в момент, когда партнёр доверяет тебе полностью?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_29',
++    category: 'intimate',
++    text: 'Как ты думаешь, как мы могли бы стать ещё ближе?',
++    answerType: QuizAnswerType.openText,
++  ),
++  QuizQuestion(
++    id: 'int_30',
++    category: 'intimate',
++    text: 'Есть ли что-то, что ты хотел(а) бы делать вместе чаще, но не говорил(а)?',
++    answerType: QuizAnswerType.openText,
++  ),
++];
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Helpers
++// ─────────────────────────────────────────────────────────────────────────────
++
++/// Все вопросы для данной категории.
++List<QuizQuestion> questionsForCategory(String categoryId) {
++  if (categoryId == 'random') {
++    // Случайный — из всех категорий кроме intimate и random.
++    final pool = kQuizQuestions
++        .where((q) => q.category != 'intimate' && q.category != 'random')
++        .toList();
++    pool.shuffle();
++    return pool;
++  }
++  return kQuizQuestions.where((q) => q.category == categoryId).toList();
++}
++
++/// Один случайный вопрос из категории.
++QuizQuestion? randomQuestionFromCategory(String categoryId,
++    {Set<String>? excludeIds}) {
++  final list = questionsForCategory(categoryId)
++      .where((q) => excludeIds == null || !excludeIds.contains(q.id))
++      .toList();
++  if (list.isEmpty) return null;
++  list.shuffle();
++  return list.first;
++}
+diff --git a/pairapp_mobile/lib/shared/models/quiz_question.dart b/pairapp_mobile/lib/shared/models/quiz_question.dart
+new file mode 100644
+index 0000000..78a6c39
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/models/quiz_question.dart
+@@ -0,0 +1,67 @@
++/// Тип ответа на вопрос квиза.
++enum QuizAnswerType {
++  openText,
++  choice;
++
++  String get firestoreValue {
++    switch (this) {
++      case QuizAnswerType.openText:
++        return 'open_text';
++      case QuizAnswerType.choice:
++        return 'choice';
++    }
++  }
++
++  static QuizAnswerType fromString(String? value) {
++    switch (value) {
++      case 'choice':
++        return QuizAnswerType.choice;
++      default:
++        return QuizAnswerType.openText;
++    }
++  }
++}
++
++/// Вариант ответа для вопросов типа [QuizAnswerType.choice].
++class QuizOption {
++  const QuizOption({required this.id, required this.text});
++
++  final String id;
++  final String text;
++
++  Map<String, dynamic> toMap() => {'id': id, 'text': text};
++}
++
++/// Категория квиза (встроенная в приложение).
++class QuizCategory {
++  const QuizCategory({
++    required this.id,
++    required this.title,
++    required this.emoji,
++    required this.gradient,
++    this.isAdult = false,
++  });
++
++  final String id;
++  final String title;
++  final String emoji;
++  final List<int> gradient; // Two ARGB ints
++  final bool isAdult;
++}
++
++/// Вопрос квиза из локального банка вопросов.
++class QuizQuestion {
++  const QuizQuestion({
++    required this.id,
++    required this.category,
++    required this.text,
++    required this.answerType,
++    this.options,
++  });
++
++  final String id;
++  final String category;
++  final String text;
++  final QuizAnswerType answerType;
++  final List<QuizOption>? options;
++}
+diff --git a/pairapp_mobile/lib/shared/models/quiz_round.dart b/pairapp_mobile/lib/shared/models/quiz_round.dart
+new file mode 100644
+index 0000000..fb26d92
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/models/quiz_round.dart
+@@ -0,0 +1,106 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++
++/// Статус раунда квиза (один вопрос для двух партнёров).
++enum QuizRoundStatus {
++  waitingBoth,    // Никто ещё не ответил
++  waitingPartner, // Текущий пользователь ответил, ждём партнёра
++  completed;      // Оба ответили — можно показывать reveal
++
++  static QuizRoundStatus fromString(String? value) {
++    switch (value) {
++      case 'waiting_partner':
++        return QuizRoundStatus.waitingPartner;
++      case 'completed':
++        return QuizRoundStatus.completed;
++      default:
++        return QuizRoundStatus.waitingBoth;
++    }
++  }
++}
++
++/// Один раунд квиза — один вопрос, два партнёра.
++class QuizRound {
++  const QuizRound({
++    required this.id,
++    required this.coupleId,
++    required this.createdBy,
++    required this.category,
++    required this.questionId,
++    required this.questionText,
++    required this.answerType,
++    required this.options,
++    required this.answers,
++    required this.status,
++    required this.matched,
++    required this.partnerAId,
++    required this.partnerBId,
++    required this.createdAt,
++    this.completedAt,
++  });
++
++  final String id;
++  final String coupleId;
++  final String createdBy;
++  final String category;
++  final String questionId;
++  final String questionText;
++  final String answerType; // "open_text" | "choice"
++  final List<Map<String, String>> options;
++  /// uid → текст ответа
++  final Map<String, String> answers;
++  final QuizRoundStatus status;
++  final bool? matched;
++  final String partnerAId;
++  final String partnerBId;
++  final DateTime createdAt;
++  final DateTime? completedAt;
++
++  bool get isCompleted => status == QuizRoundStatus.completed;
++
++  /// Ответил ли данный [uid].
++  bool hasAnswered(String uid) => answers.containsKey(uid);
++
++  /// Ответ данного [uid] (null если ещё не ответил).
++  String? answerOf(String uid) => answers[uid];
++
++  /// Id партнёра для данного [uid].
++  String partnerOf(String uid) => uid == partnerAId ? partnerBId : partnerAId;
++
++  factory QuizRound.fromFirestore(DocumentSnapshot doc) {
++    final data = doc.data() as Map<String, dynamic>;
++
++    final rawAnswers = data['answers'] as Map<String, dynamic>? ?? {};
++    final answers = rawAnswers.map((k, v) => MapEntry(k, v.toString()));
++
++    final rawOptions = data['options'];
++    final options = <Map<String, String>>[];
++    if (rawOptions is List) {
++      for (final opt in rawOptions) {
++        if (opt is Map) {
++          options.add({
++            'id': opt['id']?.toString() ?? '',
++            'text': opt['text']?.toString() ?? '',
++          });
++        }
++      }
++    }
++
++    return QuizRound(
++      id: doc.id,
++      coupleId: data['coupleId'] as String? ?? '',
++      createdBy: data['createdBy'] as String? ?? '',
++      category: data['category'] as String? ?? '',
++      questionId: data['questionId'] as String? ?? '',
++      questionText: data['questionText'] as String? ?? '',
++      answerType: data['answerType'] as String? ?? 'open_text',
++      options: options,
++      answers: answers,
++      status: QuizRoundStatus.fromString(data['status'] as String?),
++      matched: data['matched'] as bool?,
++      partnerAId: data['partnerAId'] as String? ?? '',
++      partnerBId: data['partnerBId'] as String? ?? '',
++      createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
++      completedAt: (data['completedAt'] as Timestamp?)?.toDate(),
++    );
++  }
++}
+diff --git a/pairapp_mobile/lib/shared/services/quiz_service.dart b/pairapp_mobile/lib/shared/services/quiz_service.dart
+new file mode 100644
+index 0000000..dc1d994
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/services/quiz_service.dart
+@@ -0,0 +1,95 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++
++import '../models/quiz_round.dart';
++import 'functions_service.dart';
++
++/// Сервис для квизов V1 (один вопрос — один раунд).
++/// Read: прямые Firestore-запросы по coupleId.
++/// Write: через Cloud Functions.
++class QuizService {
++  QuizService({
++    FirebaseFirestore? firestore,
++    FunctionsService? functions,
++  })  : _firestore = firestore ?? FirebaseFirestore.instance,
++        _functions = functions ?? FunctionsService();
++
++  final FirebaseFirestore _firestore;
++  final FunctionsService _functions;
++
++  static const String _collection = 'quiz_rounds';
++
++  // ── Streams ───────────────────────────────────────────────────────────────
++
++  /// Стрим активного раунда пары (waiting_both или waiting_partner).
++  /// Возвращает null если нет активного раунда.
++  Stream<QuizRound?> watchActiveRound(String coupleId) {
++    return _firestore
++        .collection(_collection)
++        .where('coupleId', isEqualTo: coupleId)
++        .where('status', whereIn: ['waiting_both', 'waiting_partner'])
++        .orderBy('createdAt', descending: true)
++        .limit(1)
++        .snapshots()
++        .map((snap) {
++          if (snap.docs.isEmpty) return null;
++          return QuizRound.fromFirestore(snap.docs.first);
++        });
++  }
++
++  /// Стрим последних завершённых раундов пары (для истории).
++  Stream<List<QuizRound>> watchCompletedRounds(String coupleId,
++      {int limit = 20}) {
++    return _firestore
++        .collection(_collection)
++        .where('coupleId', isEqualTo: coupleId)
++        .where('status', isEqualTo: 'completed')
++        .orderBy('completedAt', descending: true)
++        .limit(limit)
++        .snapshots()
++        .map((snap) =>
++            snap.docs.map((d) => QuizRound.fromFirestore(d)).toList());
++  }
++
++  /// Стрим одного конкретного раунда по id.
++  Stream<QuizRound?> watchRound(String roundId) {
++    return _firestore
++        .collection(_collection)
++        .doc(roundId)
++        .snapshots()
++        .map((snap) {
++      if (!snap.exists) return null;
++      return QuizRound.fromFirestore(snap);
++    });
++  }
++
++  // ── Cloud Function calls ──────────────────────────────────────────────────
++
++  /// Создаёт новый раунд с одним вопросом.
++  Future<String> createQuizRound({
++    required String category,
++    required String questionId,
++    required String questionText,
++    required String answerType,
++    List<Map<String, String>>? options,
++  }) async {
++    final result = await _functions.call('createQuizRound', {
++      'category': category,
++      'questionId': questionId,
++      'questionText': questionText,
++      'answerType': answerType,
++      if (options != null && options.isNotEmpty) 'options': options,
++    });
++    return result['roundId'] as String;
++  }
++
++  /// Отправляет ответ текущего пользователя.
++  Future<Map<String, dynamic>> submitQuizAnswer({
++    required String roundId,
++    required String answer,
++  }) async {
++    return _functions.call('submitQuizAnswer', {
++      'roundId': roundId,
++      'answer': answer,
++    });
++  }
++}

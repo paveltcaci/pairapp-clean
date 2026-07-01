@@ -6,6 +6,7 @@ import '../../shared/services/user_service.dart';
 import '../../shared/widgets/app_card.dart';
 import '../../theme/app_colors.dart';
 import '../chores/chore_randomizer_screen.dart';
+import '../quiz/quiz_screen.dart';
 import '../randomizer/randomizer_screen.dart';
 import '../wishlist/wishlist_screen.dart';
 
@@ -143,7 +144,10 @@ class _ActivitiesScreenState extends State<ActivitiesScreen> {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        onTap: () {},
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const QuizScreen()),
+        ),
       ),
       _ActivityCardData(
         icon: Icons.favorite_border_rounded,

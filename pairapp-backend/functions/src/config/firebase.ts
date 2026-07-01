@@ -31,6 +31,7 @@ export const Collections = {
   quizQuestions: "quiz_questions",
   quizSessions: "quiz_sessions",
   quizAnswers: "quiz_answers",
+  quizRounds: "quiz_rounds",
   relationshipEvents: "relationship_events",
   reports: "reports",
   subscriptions: "subscriptions",

@@ -159,6 +159,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ---------- quiz_rounds (Квизы V1) ----------
+    // Один вопрос — один документ раунда. Оба партнёра читают раунд,
+    // но клиент не должен показывать answers партнёра до status == 'completed'.
+    match /quiz_rounds/{roundId} {
+      allow read: if isMemberOfCouple(resource.data.coupleId);
+      allow write: if false;
+    }
+
     // ---------- relationship_events ----------
     match /relationship_events/{eventId} {
       allow read: if isMemberOfCouple(resource.data.coupleId);
@@ -205,7 +213,7 @@ service cloud.firestore {
           'users', 'couples', 'issues', 'issue_messages', 'agreements',
           'checkins', 'activities', 'activity_history', 'chore_tasks',
           'chore_spins', 'quiz_questions', 'quiz_sessions', 'quiz_answers',
-          'relationship_events', 'reports', 'subscriptions', 'wishlist_items'
+          'quiz_rounds', 'relationship_events', 'reports', 'subscriptions', 'wishlist_items'
         ];
     }
   }
