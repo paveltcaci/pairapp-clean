@@ -1,0 +1,984 @@
+diff --git a/pairapp_mobile/lib/features/quiz/quiz_screen.dart b/pairapp_mobile/lib/features/quiz/quiz_screen.dart
+index c10cda8..f711652 100644
+--- a/pairapp_mobile/lib/features/quiz/quiz_screen.dart
++++ b/pairapp_mobile/lib/features/quiz/quiz_screen.dart
+@@ -1,7 +1,9 @@
++import 'dart:async';
+ import 'dart:math';
+ 
+ import 'package:firebase_auth/firebase_auth.dart';
+ import 'package:flutter/material.dart';
++import 'package:intl/intl.dart';
+ 
+ import '../../shared/data/quiz_questions_data.dart';
+ import '../../shared/models/quiz_question.dart';
+@@ -11,6 +13,13 @@ import '../../shared/services/quiz_service.dart';
+ import '../../shared/services/user_service.dart';
+ import '../../theme/app_colors.dart';
+ 
++// ─────────────────────────────────────────────────────────────────────────────
++// Session-scoped flags (reset on app restart)
++// ─────────────────────────────────────────────────────────────────────────────
++
++/// Показывать confirm-диалог "Близость 18+" только один раз за сессию.
++bool _quizAdultConfirmShownInSession = false;
++
+ // ─────────────────────────────────────────────────────────────────────────────
+ // Entry point
+ // ─────────────────────────────────────────────────────────────────────────────
+@@ -30,12 +39,26 @@ class _QuizScreenState extends State<QuizScreen> {
+   String? _currentUserId;
+   bool _loading = true;
+ 
++  // Локально управляем, какой раунд сейчас показан на экране.
++  // Это НЕ производная от watchActiveRound(), потому что тот стрим
++  // перестаёт возвращать раунд, как только он становится completed —
++  // а нам как раз в этот момент нужно показать reveal, а не список категорий.
++  String? _viewingRoundId;
++  final Set<String> _dismissedRoundIds = {};
++  StreamSubscription<QuizRound?>? _activeRoundSub;
++
+   @override
+   void initState() {
+     super.initState();
+     _loadProfile();
+   }
+ 
++  @override
++  void dispose() {
++    _activeRoundSub?.cancel();
++    super.dispose();
++  }
++
+   Future<void> _loadProfile() async {
+     try {
+       final user = await _userService.getCurrentUserProfile();
+@@ -46,12 +69,43 @@ class _QuizScreenState extends State<QuizScreen> {
+         _currentUserId = uid;
+         _loading = false;
+       });
++      final coupleId = _coupleId;
++      if (coupleId != null && coupleId.isNotEmpty) {
++        _watchForActiveRound(coupleId);
++      }
+     } catch (_) {
+       if (!mounted) return;
+       setState(() => _loading = false);
+     }
+   }
+ 
++  /// Слушает активный (waiting_both / waiting_partner) раунд пары и
++  /// автоматически открывает его, если сейчас ничего не показывается.
++  /// Не переоткрывает раунд, который пользователь только что закрыл сам.
++  void _watchForActiveRound(String coupleId) {
++    _activeRoundSub?.cancel();
++    _activeRoundSub = _quizService.watchActiveRound(coupleId).listen((round) {
++      if (!mounted) return;
++      if (round != null &&
++          _viewingRoundId == null &&
++          !_dismissedRoundIds.contains(round.id)) {
++        setState(() => _viewingRoundId = round.id);
++      }
++    });
++  }
++
++  void _openRound(String roundId) {
++    setState(() => _viewingRoundId = roundId);
++  }
++
++  void _exitToCategories() {
++    final leaving = _viewingRoundId;
++    setState(() {
++      if (leaving != null) _dismissedRoundIds.add(leaving);
++      _viewingRoundId = null;
++    });
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     return Scaffold(
+@@ -75,38 +129,25 @@ class _QuizScreenState extends State<QuizScreen> {
+       return _buildNoCoupleState();
+     }
+ 
+-    // Main stream: watch active round
+-    return StreamBuilder<QuizRound?>(
+-      stream: _quizService.watchActiveRound(coupleId),
+-      builder: (context, snapshot) {
+-        if (snapshot.connectionState == ConnectionState.waiting) {
+-          return const Center(
+-            child: CircularProgressIndicator(color: AppColors.purple),
+-          );
+-        }
+-        if (snapshot.hasError) {
+-          return _buildError();
+-        }
+-
+-        final activeRound = snapshot.data;
+-
+-        if (activeRound != null) {
+-          // Show active round screen
+-          return _ActiveRoundView(
+-            round: activeRound,
+-            uid: uid,
+-            quizService: _quizService,
+-            onClose: () {},
+-          );
+-        }
++    final viewingRoundId = _viewingRoundId;
++    if (viewingRoundId != null) {
++      return _ActiveRoundView(
++        key: ValueKey(viewingRoundId),
++        roundId: viewingRoundId,
++        uid: uid,
++        coupleId: coupleId,
++        quizService: _quizService,
++        onExitToCategories: _exitToCategories,
++        onOpenRound: _openRound,
++      );
++    }
+ 
+-        // No active round — show categories
+-        return _CategoryPickerView(
+-          coupleId: coupleId,
+-          uid: uid,
+-          quizService: _quizService,
+-        );
+-      },
++    // No active round being viewed — show categories
++    return _CategoryPickerView(
++      coupleId: coupleId,
++      uid: uid,
++      quizService: _quizService,
++      onOpenRound: _openRound,
+     );
+   }
+ 
+@@ -138,13 +179,6 @@ class _QuizScreenState extends State<QuizScreen> {
+       ),
+     );
+   }
+-
+-  Widget _buildError() {
+-    return const Center(
+-      child: Text('Ошибка загрузки',
+-          style: TextStyle(color: AppColors.textSecondary)),
+-    );
+-  }
+ }
+ 
+ // ─────────────────────────────────────────────────────────────────────────────
+@@ -156,11 +190,13 @@ class _CategoryPickerView extends StatelessWidget {
+     required this.coupleId,
+     required this.uid,
+     required this.quizService,
++    required this.onOpenRound,
+   });
+ 
+   final String coupleId;
+   final String uid;
+   final QuizService quizService;
++  final ValueChanged<String> onOpenRound;
+ 
+   @override
+   Widget build(BuildContext context) {
+@@ -214,7 +250,7 @@ class _CategoryPickerView extends StatelessWidget {
+               crossAxisCount: 2,
+               crossAxisSpacing: 12,
+               mainAxisSpacing: 12,
+-              childAspectRatio: 0.88,
++              childAspectRatio: 1.08,
+             ),
+             itemCount: kQuizCategories.length,
+             itemBuilder: (context, i) {
+@@ -236,7 +272,7 @@ class _CategoryPickerView extends StatelessWidget {
+   }
+ 
+   void _onCategoryTap(BuildContext context, QuizCategory cat) {
+-    if (cat.isAdult) {
++    if (cat.isAdult && !_quizAdultConfirmShownInSession) {
+       _showAdultConfirm(context, cat);
+     } else {
+       _openCategory(context, cat);
+@@ -244,6 +280,7 @@ class _CategoryPickerView extends StatelessWidget {
+   }
+ 
+   void _showAdultConfirm(BuildContext context, QuizCategory cat) {
++    _quizAdultConfirmShownInSession = true;
+     showDialog<bool>(
+       context: context,
+       builder: (ctx) => AlertDialog(
+@@ -302,6 +339,7 @@ class _CategoryPickerView extends StatelessWidget {
+           coupleId: coupleId,
+           uid: uid,
+           quizService: quizService,
++          onOpenRound: onOpenRound,
+         ),
+       ),
+     );
+@@ -321,61 +359,112 @@ class _CategoryCard extends StatelessWidget {
+   @override
+   Widget build(BuildContext context) {
+     final gradient = quizCategoryGradient(category);
++    final baseColor = Color(category.gradient[0]);
+ 
+     return GestureDetector(
+       onTap: onTap,
+       child: Container(
+-        padding: const EdgeInsets.all(16),
++        padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+         decoration: BoxDecoration(
+           gradient: gradient,
+-          borderRadius: BorderRadius.circular(20),
++          borderRadius: BorderRadius.circular(18),
+           boxShadow: [
+             BoxShadow(
+-              color: Color(category.gradient[0]).withValues(alpha: 0.3),
+-              blurRadius: 16,
++              color: baseColor.withValues(alpha: 0.35),
++              blurRadius: 14,
+               offset: const Offset(0, 4),
+             ),
+           ],
+         ),
+-        child: Column(
+-          crossAxisAlignment: CrossAxisAlignment.start,
++        child: Stack(
+           children: [
+-            // Lock badge for adult
+-            if (category.isAdult)
+-              Align(
+-                alignment: Alignment.topRight,
+-                child: Container(
+-                  padding:
+-                      const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+-                  decoration: BoxDecoration(
+-                    color: Colors.black.withValues(alpha: 0.35),
+-                    borderRadius: BorderRadius.circular(20),
++            // Soft glow accent in the corner for a livelier, less flat look
++            Positioned(
++              right: -18,
++              top: -18,
++              child: Container(
++                width: 70,
++                height: 70,
++                decoration: BoxDecoration(
++                  shape: BoxShape.circle,
++                  color: Colors.white.withValues(alpha: 0.10),
++                ),
++              ),
++            ),
++            Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Row(
++                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
++                  children: [
++                    // Icon bubble
++                    Container(
++                      width: 40,
++                      height: 40,
++                      alignment: Alignment.center,
++                      decoration: BoxDecoration(
++                        color: Colors.white.withValues(alpha: 0.18),
++                        borderRadius: BorderRadius.circular(12),
++                      ),
++                      child: Text(
++                        category.emoji,
++                        style: const TextStyle(fontSize: 20),
++                      ),
++                    ),
++                    if (category.isAdult)
++                      Container(
++                        padding: const EdgeInsets.symmetric(
++                            horizontal: 7, vertical: 4),
++                        decoration: BoxDecoration(
++                          color: Colors.black.withValues(alpha: 0.35),
++                          borderRadius: BorderRadius.circular(20),
++                          border: Border.all(
++                              color: Colors.white.withValues(alpha: 0.4)),
++                        ),
++                        child: const Row(
++                          mainAxisSize: MainAxisSize.min,
++                          children: [
++                            Icon(Icons.lock_rounded,
++                                size: 10, color: Colors.white),
++                            SizedBox(width: 3),
++                            Text(
++                              '18+',
++                              style: TextStyle(
++                                  fontSize: 10,
++                                  fontWeight: FontWeight.bold,
++                                  color: Colors.white),
++                            ),
++                          ],
++                        ),
++                      ),
++                  ],
++                ),
++                const Spacer(),
++                Text(
++                  category.title,
++                  maxLines: 2,
++                  overflow: TextOverflow.ellipsis,
++                  style: const TextStyle(
++                    fontSize: 14,
++                    fontWeight: FontWeight.bold,
++                    color: Colors.white,
++                    height: 1.2,
+                   ),
+-                  child: const Text(
+-                    '18+',
++                ),
++                if (category.subtitle.isNotEmpty) ...[
++                  const SizedBox(height: 3),
++                  Text(
++                    category.subtitle,
++                    maxLines: 1,
++                    overflow: TextOverflow.ellipsis,
+                     style: TextStyle(
+-                        fontSize: 10,
+-                        fontWeight: FontWeight.bold,
+-                        color: Colors.white),
++                      fontSize: 11,
++                      color: Colors.white.withValues(alpha: 0.8),
++                      height: 1.2,
++                    ),
+                   ),
+-                ),
+-              )
+-            else
+-              const SizedBox(height: 20),
+-            const Spacer(),
+-            Text(
+-              category.emoji,
+-              style: const TextStyle(fontSize: 32),
+-            ),
+-            const SizedBox(height: 8),
+-            Text(
+-              category.title,
+-              style: const TextStyle(
+-                fontSize: 13,
+-                fontWeight: FontWeight.bold,
+-                color: Colors.white,
+-                height: 1.3,
+-              ),
++                ],
++              ],
+             ),
+           ],
+         ),
+@@ -394,12 +483,14 @@ class _QuestionPickerScreen extends StatefulWidget {
+     required this.coupleId,
+     required this.uid,
+     required this.quizService,
++    required this.onOpenRound,
+   });
+ 
+   final QuizCategory category;
+   final String coupleId;
+   final String uid;
+   final QuizService quizService;
++  final ValueChanged<String> onOpenRound;
+ 
+   @override
+   State<_QuestionPickerScreen> createState() => _QuestionPickerScreenState();
+@@ -426,7 +517,7 @@ class _QuestionPickerScreenState extends State<_QuestionPickerScreen> {
+     if (_launching) return;
+     setState(() => _launching = true);
+     try {
+-      await widget.quizService.createQuizRound(
++      final roundId = await widget.quizService.createQuizRound(
+         category: widget.category.id,
+         questionId: _currentQuestion.id,
+         questionText: _currentQuestion.text,
+@@ -436,7 +527,8 @@ class _QuestionPickerScreenState extends State<_QuestionPickerScreen> {
+             .toList(),
+       );
+       if (!mounted) return;
+-      // Pop back to QuizScreen — the stream will pick up the active round
++      // Open the round immediately, then pop back to QuizScreen.
++      widget.onOpenRound(roundId);
+       Navigator.pop(context);
+     } on FunctionsCallException catch (e) {
+       if (!mounted) return;
+@@ -650,43 +742,64 @@ class _QuestionPickerScreenState extends State<_QuestionPickerScreen> {
+ // Active Round View
+ // ─────────────────────────────────────────────────────────────────────────────
+ 
+-class _ActiveRoundView extends StatefulWidget {
++class _ActiveRoundView extends StatelessWidget {
+   const _ActiveRoundView({
+-    required this.round,
++    super.key,
++    required this.roundId,
+     required this.uid,
++    required this.coupleId,
+     required this.quizService,
+-    required this.onClose,
++    required this.onExitToCategories,
++    required this.onOpenRound,
+   });
+ 
+-  final QuizRound round;
++  final String roundId;
+   final String uid;
++  final String coupleId;
+   final QuizService quizService;
+-  final VoidCallback onClose;
++  final VoidCallback onExitToCategories;
++  final ValueChanged<String> onOpenRound;
+ 
+-  @override
+-  State<_ActiveRoundView> createState() => _ActiveRoundViewState();
+-}
+-
+-class _ActiveRoundViewState extends State<_ActiveRoundView> {
+-  // Listen to live round updates
+   @override
+   Widget build(BuildContext context) {
++    // Watch by round id directly — this keeps working even after the round
++    // becomes `completed` and drops out of the watchActiveRound() query,
++    // which is what used to make the quiz screen snap back to the category
++    // grid right when the reveal should appear.
+     return StreamBuilder<QuizRound?>(
+-      stream: widget.quizService.watchRound(widget.round.id),
+-      initialData: widget.round,
++      stream: quizService.watchRound(roundId),
+       builder: (context, snap) {
+-        final round = snap.data ?? widget.round;
+-        return _buildRoundContent(round);
++        if (snap.connectionState == ConnectionState.waiting) {
++          return const Center(
++            child: CircularProgressIndicator(color: AppColors.purple),
++          );
++        }
++        final round = snap.data;
++        if (round == null) {
++          // Round no longer exists — bounce back to categories safely.
++          WidgetsBinding.instance
++              .addPostFrameCallback((_) => onExitToCategories());
++          return const Center(
++            child: CircularProgressIndicator(color: AppColors.purple),
++          );
++        }
++        return _buildRoundContent(context, round);
+       },
+     );
+   }
+ 
+-  Widget _buildRoundContent(QuizRound round) {
+-    final uid = widget.uid;
++  Widget _buildRoundContent(BuildContext context, QuizRound round) {
+     final iHaveAnswered = round.hasAnswered(uid);
+ 
+     if (round.isCompleted) {
+-      return _RevealView(round: round, uid: uid);
++      return _RevealView(
++        round: round,
++        uid: uid,
++        coupleId: coupleId,
++        quizService: quizService,
++        onExitToCategories: onExitToCategories,
++        onOpenRound: onOpenRound,
++      );
+     }
+ 
+     return SingleChildScrollView(
+@@ -698,7 +811,7 @@ class _ActiveRoundViewState extends State<_ActiveRoundView> {
+           Row(
+             children: [
+               GestureDetector(
+-                onTap: () => Navigator.pop(context),
++                onTap: onExitToCategories,
+                 child: Container(
+                   padding: const EdgeInsets.all(8),
+                   decoration: BoxDecoration(
+@@ -732,12 +845,26 @@ class _ActiveRoundViewState extends State<_ActiveRoundView> {
+             _AnswerForm(
+               round: round,
+               uid: uid,
+-              quizService: widget.quizService,
++              quizService: quizService,
+             )
+           else
+             _WaitingView(round: round, uid: uid),
+ 
+-          const SizedBox(height: 32),
++          const SizedBox(height: 20),
++
++          // Secondary CTA — lets you browse other categories while this
++          // round is still pending; it keeps running in the background.
++          Center(
++            child: TextButton(
++              onPressed: onExitToCategories,
++              child: const Text(
++                'К категориям',
++                style:
++                    TextStyle(color: AppColors.textSecondary, fontSize: 14),
++              ),
++            ),
++          ),
++          const SizedBox(height: 24),
+         ],
+       ),
+     );
+@@ -1142,9 +1269,17 @@ class _RevealView extends StatelessWidget {
+   const _RevealView({
+     required this.round,
+     required this.uid,
++    required this.coupleId,
++    required this.quizService,
++    required this.onExitToCategories,
++    required this.onOpenRound,
+   });
+   final QuizRound round;
+   final String uid;
++  final String coupleId;
++  final QuizService quizService;
++  final VoidCallback onExitToCategories;
++  final ValueChanged<String> onOpenRound;
+ 
+   @override
+   Widget build(BuildContext context) {
+@@ -1171,7 +1306,7 @@ class _RevealView extends StatelessWidget {
+           Row(
+             children: [
+               GestureDetector(
+-                onTap: () => Navigator.pop(context),
++                onTap: onExitToCategories,
+                 child: Container(
+                   padding: const EdgeInsets.all(8),
+                   decoration: BoxDecoration(
+@@ -1262,11 +1397,30 @@ class _RevealView extends StatelessWidget {
+ 
+           const SizedBox(height: 28),
+ 
+-          // Next question button
++          // Next question button — jumps straight into another question
++          // from the same category.
+           SizedBox(
+             width: double.infinity,
+             child: GestureDetector(
+-              onTap: () => Navigator.pop(context),
++              onTap: () {
++                final cat = kQuizCategories.firstWhere(
++                  (c) => c.id == round.category,
++                  orElse: () => kQuizCategories.first,
++                );
++                onExitToCategories();
++                Navigator.push(
++                  context,
++                  MaterialPageRoute(
++                    builder: (_) => _QuestionPickerScreen(
++                      category: cat,
++                      coupleId: coupleId,
++                      uid: uid,
++                      quizService: quizService,
++                      onOpenRound: onOpenRound,
++                    ),
++                  ),
++                );
++              },
+               child: Container(
+                 padding: const EdgeInsets.symmetric(vertical: 16),
+                 decoration: BoxDecoration(
+@@ -1293,6 +1447,19 @@ class _RevealView extends StatelessWidget {
+               ),
+             ),
+           ),
++          const SizedBox(height: 12),
++
++          // Secondary action — back to the full category grid.
++          Center(
++            child: TextButton(
++              onPressed: onExitToCategories,
++              child: const Text(
++                'К категориям',
++                style:
++                    TextStyle(color: AppColors.textSecondary, fontSize: 14),
++              ),
++            ),
++          ),
+           const SizedBox(height: 32),
+         ],
+       ),
+@@ -1428,47 +1595,259 @@ class _HistoryCard extends StatelessWidget {
+     final isChoice = round.answerType == 'choice';
+     final matched = round.matched;
+ 
+-    return Container(
+-      margin: const EdgeInsets.only(bottom: 10),
+-      padding: const EdgeInsets.all(14),
+-      decoration: BoxDecoration(
+-        color: AppColors.bgCard,
+-        borderRadius: BorderRadius.circular(14),
+-        border: Border.all(color: AppColors.bgCardLight),
++    return GestureDetector(
++      onTap: () => _openDetail(context, cat),
++      child: Container(
++        margin: const EdgeInsets.only(bottom: 10),
++        padding: const EdgeInsets.all(14),
++        decoration: BoxDecoration(
++          color: AppColors.bgCard,
++          borderRadius: BorderRadius.circular(14),
++          border: Border.all(color: AppColors.bgCardLight),
++        ),
++        child: Row(
++          children: [
++            Text(cat.emoji, style: const TextStyle(fontSize: 22)),
++            const SizedBox(width: 12),
++            Expanded(
++              child: Column(
++                crossAxisAlignment: CrossAxisAlignment.start,
++                children: [
++                  Text(
++                    round.questionText,
++                    maxLines: 2,
++                    overflow: TextOverflow.ellipsis,
++                    style: const TextStyle(
++                      fontSize: 13,
++                      color: AppColors.textPrimary,
++                      height: 1.3,
++                    ),
++                  ),
++                  const SizedBox(height: 4),
++                  if (isChoice && matched != null)
++                    Text(
++                      matched ? '❤️ Совпало' : '🌊 Не совпало',
++                      style: TextStyle(
++                        fontSize: 11,
++                        color: matched
++                            ? AppColors.statusResolved
++                            : AppColors.lavender,
++                      ),
++                    ),
++                ],
++              ),
++            ),
++            const Icon(Icons.chevron_right_rounded,
++                color: AppColors.textMuted, size: 18),
++          ],
++        ),
+       ),
+-      child: Row(
+-        children: [
+-          Text(cat.emoji, style: const TextStyle(fontSize: 22)),
+-          const SizedBox(width: 12),
+-          Expanded(
+-            child: Column(
+-              crossAxisAlignment: CrossAxisAlignment.start,
+-              children: [
++    );
++  }
++
++  void _openDetail(BuildContext context, QuizCategory cat) {
++    showModalBottomSheet<void>(
++      context: context,
++      backgroundColor: Colors.transparent,
++      isScrollControlled: true,
++      builder: (_) => _HistoryDetailSheet(round: round, uid: uid, category: cat),
++    );
++  }
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// History Detail Sheet
++// ─────────────────────────────────────────────────────────────────────────────
++
++class _HistoryDetailSheet extends StatelessWidget {
++  const _HistoryDetailSheet({
++    required this.round,
++    required this.uid,
++    required this.category,
++  });
++
++  final QuizRound round;
++  final String uid;
++  final QuizCategory category;
++
++  @override
++  Widget build(BuildContext context) {
++    final partnerUid = round.partnerOf(uid);
++    final myAnswer = round.answerOf(uid) ?? '';
++    final partnerAnswer = round.answerOf(partnerUid) ?? '';
++    final isChoice = round.answerType == 'choice';
++    final matched = round.matched;
++
++    String resolveLabel(String answerId) {
++      if (!isChoice) return answerId;
++      final opt =
++          round.options.where((o) => o['id'] == answerId).firstOrNull;
++      return opt?['text'] ?? answerId;
++    }
++
++    final completedAt = round.completedAt;
++    final dateLabel = completedAt != null
++        ? DateFormat('d MMMM, HH:mm', 'ru').format(completedAt)
++        : '';
++
++    return SafeArea(
++      child: Container(
++        margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
++        padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
++        decoration: BoxDecoration(
++          color: AppColors.bgCard,
++          borderRadius: BorderRadius.circular(24),
++          border: Border.all(color: AppColors.bgCardLight),
++        ),
++        child: SingleChildScrollView(
++          child: Column(
++            crossAxisAlignment: CrossAxisAlignment.start,
++            mainAxisSize: MainAxisSize.min,
++            children: [
++              Center(
++                child: Container(
++                  width: 40,
++                  height: 4,
++                  margin: const EdgeInsets.only(bottom: 16),
++                  decoration: BoxDecoration(
++                    color: AppColors.bgCardLight,
++                    borderRadius: BorderRadius.circular(4),
++                  ),
++                ),
++              ),
++              Row(
++                children: [
++                  Text(category.emoji, style: const TextStyle(fontSize: 22)),
++                  const SizedBox(width: 8),
++                  Expanded(
++                    child: Text(
++                      category.title.replaceAll('\n', ' '),
++                      style: const TextStyle(
++                        fontSize: 13,
++                        fontWeight: FontWeight.w600,
++                        color: AppColors.textSecondary,
++                      ),
++                    ),
++                  ),
++                  Container(
++                    padding: const EdgeInsets.symmetric(
++                        horizontal: 10, vertical: 4),
++                    decoration: BoxDecoration(
++                      color: AppColors.statusResolved.withValues(alpha: 0.15),
++                      borderRadius: BorderRadius.circular(20),
++                    ),
++                    child: const Text(
++                      'Завершено',
++                      style: TextStyle(
++                        fontSize: 11,
++                        fontWeight: FontWeight.w600,
++                        color: AppColors.statusResolved,
++                      ),
++                    ),
++                  ),
++                ],
++              ),
++              const SizedBox(height: 12),
++              Text(
++                round.questionText,
++                style: const TextStyle(
++                  fontSize: 18,
++                  fontWeight: FontWeight.bold,
++                  color: AppColors.textPrimary,
++                  height: 1.4,
++                ),
++              ),
++              if (dateLabel.isNotEmpty) ...[
++                const SizedBox(height: 6),
+                 Text(
+-                  round.questionText,
+-                  maxLines: 2,
+-                  overflow: TextOverflow.ellipsis,
++                  dateLabel,
+                   style: const TextStyle(
+-                    fontSize: 13,
+-                    color: AppColors.textPrimary,
+-                    height: 1.3,
+-                  ),
++                      fontSize: 12, color: AppColors.textMuted),
+                 ),
+-                const SizedBox(height: 4),
+-                if (isChoice && matched != null)
+-                  Text(
++              ],
++              const SizedBox(height: 20),
++              if (isChoice && matched != null) ...[
++                Container(
++                  width: double.infinity,
++                  padding: const EdgeInsets.symmetric(
++                      horizontal: 20, vertical: 14),
++                  decoration: BoxDecoration(
++                    gradient: matched
++                        ? const LinearGradient(colors: [
++                            Color(0xFF2E7D32),
++                            Color(0xFF43A047),
++                          ])
++                        : const LinearGradient(colors: [
++                            Color(0xFF5C6BC0),
++                            Color(0xFF7986CB),
++                          ]),
++                    borderRadius: BorderRadius.circular(16),
++                  ),
++                  child: Text(
+                     matched ? '❤️ Совпало' : '🌊 Не совпало',
+-                    style: TextStyle(
+-                      fontSize: 11,
+-                      color:
+-                          matched ? AppColors.statusResolved : AppColors.lavender,
++                    textAlign: TextAlign.center,
++                    style: const TextStyle(
++                      fontSize: 16,
++                      fontWeight: FontWeight.bold,
++                      color: Colors.white,
+                     ),
+                   ),
++                ),
++                const SizedBox(height: 16),
+               ],
++              _buildAnswerCard(
++                label: 'Твой ответ',
++                answer: resolveLabel(myAnswer),
++                color: AppColors.purple,
++              ),
++              const SizedBox(height: 10),
++              _buildAnswerCard(
++                label: 'Ответ партнёра',
++                answer: resolveLabel(partnerAnswer),
++                color: AppColors.roseAccent,
++              ),
++              const SizedBox(height: 8),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++
++  Widget _buildAnswerCard({
++    required String label,
++    required String answer,
++    required Color color,
++  }) {
++    return Container(
++      width: double.infinity,
++      padding: const EdgeInsets.all(16),
++      decoration: BoxDecoration(
++        color: AppColors.bgCardLight,
++        borderRadius: BorderRadius.circular(14),
++        border: Border.all(color: color.withValues(alpha: 0.3)),
++      ),
++      child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          Text(
++            label,
++            style: TextStyle(
++              fontSize: 12,
++              color: color,
++              fontWeight: FontWeight.w600,
++              letterSpacing: 0.5,
++            ),
++          ),
++          const SizedBox(height: 6),
++          Text(
++            answer,
++            style: const TextStyle(
++              fontSize: 15,
++              color: AppColors.textPrimary,
++              height: 1.4,
+             ),
+           ),
+-          const Icon(Icons.chevron_right_rounded,
+-              color: AppColors.textMuted, size: 18),
+         ],
+       ),
+     );
+diff --git a/pairapp_mobile/lib/shared/data/quiz_questions_data.dart b/pairapp_mobile/lib/shared/data/quiz_questions_data.dart
+index 83a1f3d..3908213 100644
+--- a/pairapp_mobile/lib/shared/data/quiz_questions_data.dart
++++ b/pairapp_mobile/lib/shared/data/quiz_questions_data.dart
+@@ -12,54 +12,63 @@ const List<QuizCategory> kQuizCategories = [
+     title: 'Насколько вы знаете\nдруг друга',
+     emoji: '💞',
+     gradient: [0xFF7C5CFC, 0xFF9D7FFF],
++    subtitle: 'Угадай ответ партнёра',
+   ),
+   QuizCategory(
+     id: 'deep',
+     title: 'Глубокие вопросы',
+     emoji: '🌙',
+     gradient: [0xFF2D3561, 0xFF5C6BC0],
++    subtitle: 'Честные разговоры',
+   ),
+   QuizCategory(
+     id: 'funny',
+     title: 'Смешное',
+     emoji: '😂',
+     gradient: [0xFFFF8A65, 0xFFFFB74D],
++    subtitle: 'Лёгкие вопросы без серьёза',
+   ),
+   QuizCategory(
+     id: 'food',
+     title: 'Еда и привычки',
+     emoji: '🍕',
+     gradient: [0xFFEF5350, 0xFFFF7043],
++    subtitle: 'Вкусы, мелочи и рутина',
+   ),
+   QuizCategory(
+     id: 'lifestyle',
+     title: 'Быт и характер',
+     emoji: '🏡',
+     gradient: [0xFF26A69A, 0xFF4DB6AC],
++    subtitle: 'Как вы живёте вместе',
+   ),
+   QuizCategory(
+     id: 'dreams',
+     title: 'Мечты и планы',
+     emoji: '✈️',
+     gradient: [0xFF1E88E5, 0xFF42A5F5],
++    subtitle: 'Будущее, поездки, желания',
+   ),
+   QuizCategory(
+     id: 'romance',
+     title: 'Романтика',
+     emoji: '🔥',
+     gradient: [0xFFFF6B9D, 0xFFFF8A65],
++    subtitle: 'Нежность и внимание',
+   ),
+   QuizCategory(
+     id: 'random',
+     title: 'Случайный вопрос',
+     emoji: '🎲',
+     gradient: [0xFF7C5CFC, 0xFFFF6B9D],
++    subtitle: 'Быстрый спонтанный раунд',
+   ),
+   QuizCategory(
+     id: 'intimate',
+     title: 'Близость 18+',
+     emoji: '🔞',
+     gradient: [0xFF880E4F, 0xFFAD1457],
++    subtitle: 'Только для взрослых',
+     isAdult: true,
+   ),
+ ];
+diff --git a/pairapp_mobile/lib/shared/models/quiz_question.dart b/pairapp_mobile/lib/shared/models/quiz_question.dart
+index 78a6c39..4f47efa 100644
+--- a/pairapp_mobile/lib/shared/models/quiz_question.dart
++++ b/pairapp_mobile/lib/shared/models/quiz_question.dart
+@@ -39,6 +39,7 @@ class QuizCategory {
+     required this.title,
+     required this.emoji,
+     required this.gradient,
++    this.subtitle = '',
+     this.isAdult = false,
+   });
+ 
+@@ -46,6 +47,7 @@ class QuizCategory {
+   final String title;
+   final String emoji;
+   final List<int> gradient; // Two ARGB ints
++  final String subtitle;
+   final bool isAdult;
+ }
+ 

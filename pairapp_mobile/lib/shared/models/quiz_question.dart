@@ -39,6 +39,7 @@ class QuizCategory {
     required this.title,
     required this.emoji,
     required this.gradient,
+    this.subtitle = '',
     this.isAdult = false,
   });
 
@@ -46,6 +47,7 @@ class QuizCategory {
   final String title;
   final String emoji;
   final List<int> gradient; // Two ARGB ints
+  final String subtitle;
   final bool isAdult;
 }
 
