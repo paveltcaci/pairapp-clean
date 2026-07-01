@@ -119,9 +119,17 @@ export const spinActivitySchema = z.object({
 export const createChoreTaskSchema = z.object({
   title: z.string().trim().min(1).max(120),
   description: z.string().trim().max(1000).nullish(),
+  emoji: z.string().trim().max(8).optional(),
+  category: z.string().trim().max(60).optional(),
+  intensity: z.enum(["easy", "medium", "annoying"]).optional(),
+  estimatedMinutes: z.number().int().min(1).max(480).nullish(),
 });
 
 export const spinChoreSchema = z.object({
+  choreTaskId: z.string().min(1),
+});
+
+export const softDeleteChoreTaskSchema = z.object({
   choreTaskId: z.string().min(1),
 });
 
@@ -159,6 +167,43 @@ export const updateFcmTokenSchema = z.object({
 
 export const removeFcmTokenSchema = z.object({
   fcmToken: z.string().min(1),
+});
+
+export const saveActivityIdeaSnapshotSchema = z.object({
+  localIdeaId: z.string().trim().min(1).max(60),
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().min(1).max(1000),
+  emoji: z.string().trim().min(1).max(10),
+  categories: z.array(z.string().trim().min(1).max(60)).min(1).max(10),
+  durationMinutes: z.number().int().positive().nullish(),
+  budgetLevel: z.enum(["free", "low", "medium"]),
+  locationType: z.enum(["home", "outside", "any"]),
+  vibe: z.enum(["calm", "fun", "romantic", "deep", "spontaneous", "cozy"]),
+  preparation: z.string().trim().max(500).nullish(),
+});
+
+export const removeSavedActivityIdeaSchema = z.object({
+  historyId: z.string().trim().min(1),
+});
+
+// ── Wishlist ────────────────────────────────────────────────────────────────
+
+export const createWishlistItemSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(2000).nullish(),
+  emoji: z.string().trim().max(10).optional(),
+  category: z.string().trim().max(60).optional(),
+  priority: z.enum(["low", "medium", "high"]).optional(),
+  budgetLevel: z.enum(["free", "low", "medium", "high"]).optional(),
+});
+
+export const updateWishlistItemStatusSchema = z.object({
+  itemId: z.string().min(1),
+  status: z.enum(["active", "done", "archived"]),
+});
+
+export const deleteWishlistItemSchema = z.object({
+  itemId: z.string().min(1),
 });
 
 /**

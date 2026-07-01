@@ -6,3 +6,4 @@ export * from "./agreement";
 export * from "./activity";
 export * from "./quiz";
 export * from "./misc";
+export * from "./wishlist";

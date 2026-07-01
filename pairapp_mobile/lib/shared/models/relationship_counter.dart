@@ -1,0 +1,318 @@
+/// Local breakdown of "time together" computed from [relationshipStartDate].
+/// All calculations are done in Dart to avoid a CF round-trip on every
+/// Home screen render.
+class RelationshipBreakdown {
+  final int totalDays;
+  final int years;
+  final int months;
+  final int days;
+  final DateTime nextAnniversaryDate;
+  final int daysUntilAnniversary;
+
+  const RelationshipBreakdown({
+    required this.totalDays,
+    required this.years,
+    required this.months,
+    required this.days,
+    required this.nextAnniversaryDate,
+    required this.daysUntilAnniversary,
+  });
+
+  /// Computes breakdown from [startDate] relative to today.
+  ///
+  /// Day 0 semantics: if start == today → totalDays = 0, we show "1-й день"
+  /// in the UI so users never see "0 дней" on the day they set the date.
+  factory RelationshipBreakdown.compute(DateTime startDate) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final start = DateTime(startDate.year, startDate.month, startDate.day);
+
+    // Total calendar days elapsed (0 on day of setting).
+    final totalDays = today.difference(start).inDays;
+
+    // Calendar breakdown: years / months / remaining days
+    // Uses date arithmetic so leap years and variable month lengths are
+    // handled correctly (same algorithm as backend relationshipCounter.ts).
+    int y = today.year - start.year;
+    int m = today.month - start.month;
+    int d = today.day - start.day;
+
+    if (d < 0) {
+      m -= 1;
+      // Days in previous month relative to today.
+      final prevMonth = DateTime(today.year, today.month, 0);
+      d += prevMonth.day;
+    }
+    if (m < 0) {
+      y -= 1;
+      m += 12;
+    }
+
+    // Next anniversary: same month/day, current or next year.
+    DateTime next = DateTime(today.year, start.month, start.day);
+    if (!next.isAfter(today)) {
+      next = DateTime(today.year + 1, start.month, start.day);
+    }
+    final daysUntil = next.difference(today).inDays;
+
+    return RelationshipBreakdown(
+      totalDays: totalDays,
+      years: y,
+      months: m,
+      days: d,
+      nextAnniversaryDate: next,
+      daysUntilAnniversary: daysUntil,
+    );
+  }
+
+  /// Human-readable duration: "X лет Y мес Z дней" or "X дней" if < 1 month.
+  String get durationLabel {
+    if (totalDays == 0) return '1-й день 🎉';
+
+    final parts = <String>[];
+    if (years > 0) parts.add(_plural(years, 'год', 'года', 'лет'));
+    if (months > 0) parts.add(_plural(months, 'месяц', 'месяца', 'месяцев'));
+    if (years == 0) {
+      // Show days only when less than a year (cleaner for large numbers).
+      if (months == 0 || days > 0) {
+        parts.add(_plural(days == 0 && months == 0 ? totalDays : days,
+            'день', 'дня', 'дней'));
+      }
+    }
+    return parts.join(' ');
+  }
+
+  // ── Milestone facts ────────────────────────────────────────────────────────
+
+  /// Returns a [MilestoneFact] for today. If [totalDays] hits an exact
+  /// milestone the fact is marked [MilestoneFact.isExact]. Otherwise a
+  /// deterministic fallback is chosen based on [totalDays].
+  MilestoneFact get milestoneFact =>
+      RelationshipFacts.resolve(totalDays, daysUntilAnniversary);
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  static String _plural(int n, String one, String few, String many) {
+    final mod10 = n % 10;
+    final mod100 = n % 100;
+    if (mod10 == 1 && mod100 != 11) return '$n $one';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) {
+      return '$n $few';
+    }
+    return '$n $many';
+  }
+}
+
+// ── MilestoneFact ─────────────────────────────────────────────────────────────
+
+/// A single fact shown under the relationship counter card.
+class MilestoneFact {
+  final String title;
+  final String body;
+
+  /// True when [RelationshipBreakdown.totalDays] matches an exact milestone.
+  final bool isExact;
+
+  const MilestoneFact({
+    required this.title,
+    required this.body,
+    required this.isExact,
+  });
+}
+
+// ── RelationshipFacts ─────────────────────────────────────────────────────────
+
+/// Pure, deterministic fact engine. No randomness — same [totalDays] always
+/// produces the same output, so rebuilds are stable.
+class RelationshipFacts {
+  RelationshipFacts._();
+
+  // ── Exact milestone definitions ──────────────────────────────────────────
+
+  static const Map<int, _ExactMilestone> _milestones = {
+    0:    _ExactMilestone('День первый ✨', 'Всё начинается сегодня. Первая страница вашей совместной истории.'),
+    1:    _ExactMilestone('1 день вместе', 'Вчера вы решили быть вместе. Это уже навсегда часть вашей истории.'),
+    2:    _ExactMilestone('2 дня вместе', 'Два дня — это уже маленькая традиция. Каждый следующий будет легче.'),
+    3:    _ExactMilestone('3 дня вместе', 'Три дня — говорят, именно столько нужно, чтобы привычка начала формироваться.'),
+    7:    _ExactMilestone('Первая неделя 🗓', 'Ровно 7 дней, одна полная неделя. Все 7 цветов радуги уже прожиты вместе.'),
+    10:   _ExactMilestone('10 дней 🔟', 'Двузначная история — первая круглая цифра совместного пути.'),
+    14:   _ExactMilestone('Две недели вместе', '14 дней — ровно два полных оборота Земли вокруг своей оси в паре.'),
+    21:   _ExactMilestone('Три недели вместе', '21 день — именно столько психологи отводят на формирование новой привычки. Вы уже привычка друг для друга.'),
+    30:   _ExactMilestone('Первый месяц 🌙', '30 дней — один лунный цикл. Луна уже успела смениться с тех пор, как вы вместе.'),
+    40:   _ExactMilestone('40 дней', '40 дней — магическое число. В истории это символ испытания и выхода на новый уровень.'),
+    50:   _ExactMilestone('50 дней вместе 🥂', 'Полсотни дней совместной истории. Это уже 1200 часов рядом.'),
+    60:   _ExactMilestone('60 дней', 'Два месяца в одном числе — 60 дней и 60 ночей вместе.'),
+    75:   _ExactMilestone('75 дней', 'Три четверти первого сезона. Вы прошли лето, осень или зиму — уже один сезон позади.'),
+    90:   _ExactMilestone('90 дней 🌿', 'Три месяца вместе — один квартал совместной жизни. Это уже серьёзно.'),
+    100:  _ExactMilestone('100 дней! 💯', 'Сто дней — красивое круглое число. Это 14 недель и 2 дня совместной истории.'),
+    111:  _ExactMilestone('111 — ангельское число 👼', 'Тройное единство. В нумерологии 111 — знак начала нового и правильного пути.'),
+    123:  _ExactMilestone('123 дня 🎵', 'Один-два-три. Порядковое число, идеальный ритм. Вы идёте в такт.'),
+    150:  _ExactMilestone('150 дней — полгода на горизонте', 'Пять месяцев позади, ещё один — и будет полгода. Вы уже на финишной прямой к большому юбилею.'),
+    180:  _ExactMilestone('180 дней — полгода! 🎉', 'Ровно половина года вместе. Земля прошла полпути вокруг Солнца с вами на борту.'),
+    200:  _ExactMilestone('200 дней ✌️', 'Двести дней — это уже не просто отношения, это история. Примерно 4800 часов совместного времени.'),
+    222:  _ExactMilestone('222 — магия двоек 💑', 'Двойное дежавю. В нумерологии 222 — число баланса, гармонии и партнёрства.'),
+    250:  _ExactMilestone('250 дней — четверть тысячи 🏆', 'Четверть тысячи дней! Это уже не просто дни — это глава в книге вашей жизни.'),
+    300:  _ExactMilestone('300 дней 🎯', 'Триста дней вместе. Почти год — осталось всего 65 дней до первой годовщины.'),
+    333:  _ExactMilestone('333 — половина 666 🌟', 'Три тройки в ряд — редкое и красивое число. Ваша история приближается к первому году.'),
+    365:  _ExactMilestone('Первый год! 🥳🎊', 'Один полный оборот Земли вокруг Солнца — вместе. 8760 часов совместной истории.'),
+    400:  _ExactMilestone('400 дней ✨', 'Четыреста дней — больше года. Вы уже пережили все четыре сезона вместе.'),
+    444:  _ExactMilestone('444 — тройная четвёрка 🍀', 'В нумерологии 444 — число стабильности и прочного фундамента. Ваши отношения становятся фундаментом жизни.'),
+    500:  _ExactMilestone('500 дней! 🎈', 'Пятьсот дней — это 71 неделя и 3 дня любви. Почти 12 000 часов совместного бытия.'),
+    555:  _ExactMilestone('555 — тройная пятёрка 🔮', 'Пять-пять-пять. Символ перемен и роста. Ваши отношения продолжают расти.'),
+    600:  _ExactMilestone('600 дней 💪', 'Шестьсот дней вместе. Это 85 полных недель и 5 дней совместной жизни.'),
+    666:  _ExactMilestone('666 дней 🌈', 'Не бойтесь этого числа — в истории это просто ровно 1 год, 9 месяцев и несколько дней вместе.'),
+    700:  _ExactMilestone('700 дней 🌟', 'Семьсот дней — это ровно 100 недель вместе плюс ещё немного. Вот это юбилей!'),
+    730:  _ExactMilestone('Два года! 🥂🎉', 'Ровно два года — 730 дней. Два полных оборота Земли вокруг Солнца вместе с вами.'),
+    777:  _ExactMilestone('777 — джекпот! 🎰', 'Тройная семёрка — самое счастливое число. Вы сорвали главный джекпот — друг друга.'),
+    800:  _ExactMilestone('800 дней 🏅', 'Восемьсот дней — это уже больше двух лет. 114 недель совместной истории.'),
+    888:  _ExactMilestone('888 — тройная восьмёрка ♾️', 'Восьмёрка — символ бесконечности. Три восьмёрки — бесконечность в кубе. Будьте вместе вечно.'),
+    900:  _ExactMilestone('900 дней! 🌙', 'Девятьсот дней — почти два с половиной года. Вы уже пережили вместе два полных цикла всех сезонов.'),
+    999:  _ExactMilestone('999 — один шаг до тысячи ⚡', 'Завтра — тысяча дней. Цифра 999 — самая красивая перед великим юбилеем. Готовьтесь праздновать!'),
+    1000: _ExactMilestone('1000 дней! 🎆🎇', 'Тысяча дней вместе — четырёхзначная история любви. Это 142 недели или почти 24 000 часов рядом.'),
+    1095: _ExactMilestone('Три года! 🎂', 'Три года вместе — 1095 дней. Вы прошли три полных круга вокруг Солнца рядом друг с другом.'),
+    1111: _ExactMilestone('1111 — четыре единицы 🌠', 'Редкое число из четырёх единиц. Говорят, что 11:11 — момент, когда сбываются желания. Загадайте одно вместе.'),
+    1234: _ExactMilestone('1234 — восходящая лестница 📈', 'Один-два-три-четыре — идеальная последовательность. Ваши отношения развиваются по нарастающей.'),
+    1460: _ExactMilestone('Четыре года! 🎊', 'Четыре года — 1460 дней. Четыре полных оборота Земли вокруг Солнца вместе.'),
+    1500: _ExactMilestone('1500 дней 🚀', 'Полторы тысячи дней — это больше четырёх лет. 214 недель совместной истории.'),
+    1825: _ExactMilestone('Пять лет! 🏆👑', 'Пять лет — 1825 дней. Пять полных оборотов Земли вокруг Солнца. Вы — настоящая команда.'),
+    2000: _ExactMilestone('2000 дней! 🌍', 'Две тысячи дней вместе — это почти 5,5 лет. 285 недель совместного пути.'),
+    2190: _ExactMilestone('Шесть лет вместе! 🎉', 'Шесть лет — 2190 дней. Это уже не просто отношения — это образ жизни.'),
+    2222: _ExactMilestone('2222 — четыре двойки 💞', 'Две тысячи двести двадцать два дня. Число идеального баланса и гармонии — в четвёртой степени.'),
+    2500: _ExactMilestone('2500 дней 💎', '2500 дней — почти семь лет. Почти в каждом часе этих дней вы думали друг о друге.'),
+    2555: _ExactMilestone('Семь лет! 🌟', 'Семь лет вместе. Говорят, именно в этот момент пара становится по-настоящему зрелой и глубокой.'),
+    3000: _ExactMilestone('3000 дней 🔥', 'Три тысячи дней — больше восьми лет. 428 недель совместной жизни и бесчисленное количество воспоминаний.'),
+    3285: _ExactMilestone('Девять лет! 🥂', 'Девять лет — 3285 дней. Ещё один — и будет круглая декада.'),
+    3333: _ExactMilestone('3333 — четыре тройки 🍀', 'Три-три-три-три. В нумерологии тройка — число творчества и радости жизни. У вас их четыре.'),
+    3650: _ExactMilestone('Десять лет! 👑🎊', 'Десять лет вместе — 3650 дней. Целая декада. Вы — легенда.'),
+    4000: _ExactMilestone('4000 дней ✨', 'Четыре тысячи дней — почти 11 лет. Ваша история длиннее, чем многие фильмы, книги и саги вместе взятые.'),
+    4444: _ExactMilestone('4444 — четыре четвёрки 💪', 'Четыре четвёрки — символ абсолютной стабильности. 12 лет — ваш фундамент непоколебим.'),
+    5000: _ExactMilestone('5000 дней! 🌈🎆', 'Пять тысяч дней — почти 14 лет. Это 714 недель или 120 000 часов совместной истории. Невероятно.'),
+  };
+
+  // ── Fallback facts pool ───────────────────────────────────────────────────
+  // Chosen deterministically by totalDays % pool.length — stable across rebuilds.
+
+  static List<String Function(int days, int daysUntilAnniversary)>
+      get _fallbackPool => [
+            (d, ann) =>
+                'Это уже ${_weeks(d)} ${_weeksLabel(d)} и ${d % 7} ${_daysLabel(d % 7)} вместе.',
+            (d, ann) =>
+                'Примерно ${(d * 24).toString().replaceAllMapped(_thousands, _fmt)} часов совместной истории.',
+            (d, ann) =>
+                'До следующей годовщины осталось ${_pluralDays(ann)}.',
+            (d, ann) =>
+                'Ваша история длится уже ${_pluralDays(d)} — это ${_weeks(d)} ${_weeksLabel(d)}.',
+            (d, ann) =>
+                'Примерно ${(d * 1440)} минут вместе — и каждая имеет значение.',
+            (d, ann) =>
+                'Вы прожили вместе ${_seasons(d)} ${_seasonsLabel(_seasons(d))}.',
+            (d, ann) =>
+                'До следующего красивого числа: ${_nextMilestone(d)} дней — осталось ${_nextMilestone(d) - d}.',
+            (d, ann) =>
+                'Каждый из ${_pluralDays(d)} сделал вас чуть ближе друг к другу.',
+            (d, ann) =>
+                '${_weeks(d)} полных недель вместе — и это только начало.',
+            (d, ann) =>
+                'Это уже больше ${(d / 30).floor()} ${_monthsLabel((d / 30).floor())} вашей общей истории.',
+          ];
+
+  // ── Public API ─────────────────────────────────────────────────────────────
+
+  static MilestoneFact resolve(int totalDays, int daysUntilAnniversary) {
+    final exact = _milestones[totalDays];
+    if (exact != null) {
+      return MilestoneFact(
+        title: exact.title,
+        body: exact.body,
+        isExact: true,
+      );
+    }
+
+    final pool = _fallbackPool;
+    final fn = pool[totalDays % pool.length];
+    return MilestoneFact(
+      title: 'Факт дня',
+      body: fn(totalDays, daysUntilAnniversary),
+      isExact: false,
+    );
+  }
+
+  // ── Internal helpers ───────────────────────────────────────────────────────
+
+  static final _thousands = RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))');
+  static String _fmt(Match m) => '${m[1]} ';
+
+  static int _weeks(int days) => days ~/ 7;
+  static int _seasons(int days) => days ~/ 91;
+  static int _nextMilestone(int days) {
+    const targets = [
+      7, 10, 14, 21, 30, 40, 50, 60, 75, 90, 100, 111, 123, 150, 180,
+      200, 222, 250, 300, 333, 365, 400, 444, 500, 555, 600, 666, 700,
+      730, 777, 800, 888, 900, 999, 1000, 1111, 1234, 1500, 2000, 2222,
+      2500, 3000, 3333, 3650, 4000, 4444, 5000,
+    ];
+    for (final t in targets) {
+      if (t > days) return t;
+    }
+    return days + 1000;
+  }
+
+  static String _pluralDays(int n) {
+    final mod10 = n % 10;
+    final mod100 = n % 100;
+    if (mod10 == 1 && mod100 != 11) return '$n день';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) {
+      return '$n дня';
+    }
+    return '$n дней';
+  }
+
+  static String _weeksLabel(int days) {
+    final n = days ~/ 7;
+    final mod10 = n % 10;
+    final mod100 = n % 100;
+    if (mod10 == 1 && mod100 != 11) return 'неделя';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) {
+      return 'недели';
+    }
+    return 'недель';
+  }
+
+  static String _daysLabel(int n) {
+    final mod10 = n % 10;
+    final mod100 = n % 100;
+    if (mod10 == 1 && mod100 != 11) return 'день';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) {
+      return 'дня';
+    }
+    return 'дней';
+  }
+
+  static String _monthsLabel(int n) {
+    final mod10 = n % 10;
+    final mod100 = n % 100;
+    if (mod10 == 1 && mod100 != 11) return 'месяца';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) {
+      return 'месяцев';
+    }
+    return 'месяцев';
+  }
+
+  static String _seasonsLabel(int n) {
+    final mod10 = n % 10;
+    final mod100 = n % 100;
+    if (mod10 == 1 && mod100 != 11) return 'сезон';
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) {
+      return 'сезона';
+    }
+    return 'сезонов';
+  }
+}
+
+// ── Internal data class ───────────────────────────────────────────────────────
+
+class _ExactMilestone {
+  final String title;
+  final String body;
+  const _ExactMilestone(this.title, this.body);
+}

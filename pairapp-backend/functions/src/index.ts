@@ -27,3 +27,4 @@ export * from "./modules/moderation";
 export * from "./modules/notifications";
 export * from "./modules/relationshipEvents";
 export * from "./modules/admin";
+export * from "./modules/wishlist";

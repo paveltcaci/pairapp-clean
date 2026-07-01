@@ -147,6 +147,9 @@ export const spinChoreRandomizer = onCall<SpinChoreInput>(async (request) => {
     partnerARecentCount,
     partnerBRecentCount,
     spunAt: Timestamp.now(),
+    titleSnapshot: task.title,
+    emojiSnapshot: task.emoji ?? "🧹",
+    categorySnapshot: task.category ?? "другое",
   };
   await spinRef.set(spinDoc);
 

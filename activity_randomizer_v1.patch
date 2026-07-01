@@ -1,0 +1,3628 @@
+diff --git a/pairapp-backend/functions/src/modules/activities/index.ts b/pairapp-backend/functions/src/modules/activities/index.ts
+index 9530a85..34bf4af 100644
+--- a/pairapp-backend/functions/src/modules/activities/index.ts
++++ b/pairapp-backend/functions/src/modules/activities/index.ts
+@@ -1,2 +1,4 @@
+ export * from "./createActivity";
+ export * from "./spinActivityRandomizer";
++export * from "./saveActivityIdeaSnapshot";
++export * from "./removeSavedActivityIdea";
+diff --git a/pairapp-backend/functions/src/modules/activities/removeSavedActivityIdea.ts b/pairapp-backend/functions/src/modules/activities/removeSavedActivityIdea.ts
+new file mode 100644
+index 0000000..82f349b
+--- /dev/null
++++ b/pairapp-backend/functions/src/modules/activities/removeSavedActivityIdea.ts
+@@ -0,0 +1,42 @@
++import { onCall } from "firebase-functions/v2/https";
++import { db, Collections } from "../../config/firebase";
++import { requireAuth } from "../../utils/auth";
++import { parseOrThrow, removeSavedActivityIdeaSchema } from "../../utils/validation";
++import { getActiveCoupleOrThrow } from "../../utils/couple-context";
++import { Errors } from "../../utils/errors";
++import { ActivityHistoryDoc } from "../../types";
++
++/**
++ * removeSavedActivityIdea — удаляет сохранённую идею из activity_history.
++ *
++ * Проверяет:
++ * 1. Пользователь аутентифицирован
++ * 2. Документ существует
++ * 3. coupleId документа совпадает с активной парой пользователя
++ *    (запрещает удаление чужих записей)
++ */
++export const removeSavedActivityIdea = onCall<unknown>(async (request) => {
++  const uid = requireAuth(request);
++  const input = parseOrThrow(removeSavedActivityIdeaSchema, request.data);
++  const { couple } = await getActiveCoupleOrThrow(uid);
++
++  const historyRef = db
++    .collection(Collections.activityHistory)
++    .doc(input.historyId);
++
++  const snap = await historyRef.get();
++  if (!snap.exists) {
++    throw Errors.notFound("Сохранённая идея");
++  }
++
++  const doc = snap.data() as ActivityHistoryDoc;
++  if (doc.coupleId !== couple.id) {
++    throw Errors.permissionDenied(
++      "Эта запись не принадлежит вашей паре."
++    );
++  }
++
++  await historyRef.delete();
++
++  return { success: true };
++});
+diff --git a/pairapp-backend/functions/src/modules/activities/saveActivityIdeaSnapshot.ts b/pairapp-backend/functions/src/modules/activities/saveActivityIdeaSnapshot.ts
+new file mode 100644
+index 0000000..94a27d0
+--- /dev/null
++++ b/pairapp-backend/functions/src/modules/activities/saveActivityIdeaSnapshot.ts
+@@ -0,0 +1,64 @@
++import { onCall } from "firebase-functions/v2/https";
++import { Timestamp } from "firebase-admin/firestore";
++import { db, Collections } from "../../config/firebase";
++import { requireAuth } from "../../utils/auth";
++import { parseOrThrow, saveActivityIdeaSnapshotSchema } from "../../utils/validation";
++import { getActiveCoupleOrThrow } from "../../utils/couple-context";
++
++/**
++ * saveActivityIdeaSnapshot — сохраняет snapshot локальной builtin-идеи
++ * в activity_history без прямой записи с клиента.
++ *
++ * Клиент хранит большой локальный список идей (local_builtin).
++ * Эта CF позволяет "закрепить" выбранную идею для пары, записав её
++ * snapshot в activity_history через Admin SDK.
++ *
++ * Дубликаты: если coupleId + localIdeaId уже существует — возвращаем
++ * { alreadySaved: true } без ошибки.
++ */
++export const saveActivityIdeaSnapshot = onCall<unknown>(async (request) => {
++  const uid = requireAuth(request);
++  const input = parseOrThrow(saveActivityIdeaSnapshotSchema, request.data);
++  const { couple } = await getActiveCoupleOrThrow(uid);
++
++  // Проверка дубликата по coupleId + localIdeaId
++  const existingSnap = await db
++    .collection(Collections.activityHistory)
++    .where("coupleId", "==", couple.id)
++    .where("localIdeaId", "==", input.localIdeaId)
++    .limit(1)
++    .get();
++
++  if (!existingSnap.empty) {
++    return { alreadySaved: true };
++  }
++
++  const historyRef = db.collection(Collections.activityHistory).doc();
++  const now = Timestamp.now();
++
++  await historyRef.set({
++    id: historyRef.id,
++    coupleId: couple.id,
++    // null-поля для обратной совместимости с acceptActivity-контрактом
++    activityId: null,
++    chosenBy: null,
++    chosenAt: null,
++    // snapshot полей local idea
++    source: "local_builtin",
++    localIdeaId: input.localIdeaId,
++    title: input.title,
++    description: input.description,
++    emoji: input.emoji,
++    categories: input.categories,
++    durationMinutes: input.durationMinutes ?? null,
++    budgetLevel: input.budgetLevel,
++    locationType: input.locationType,
++    vibe: input.vibe,
++    preparation: input.preparation ?? null,
++    savedBy: uid,
++    savedAt: now,
++    createdAt: now,
++  });
++
++  return { success: true, historyId: historyRef.id };
++});
+diff --git a/pairapp-backend/functions/src/types/activity.ts b/pairapp-backend/functions/src/types/activity.ts
+index 489734c..399b7a6 100644
+--- a/pairapp-backend/functions/src/types/activity.ts
++++ b/pairapp-backend/functions/src/types/activity.ts
+@@ -33,13 +33,34 @@ export interface SpinActivityInput {
+ 
+ /**
+  * Коллекция `activity_history` (раздел 17.8 ТЗ).
++ *
++ * Обратная совместимость: записи от acceptActivity имеют
++ * source = undefined, localIdeaId = undefined, chosenBy = string.
++ * Записи от saveActivityIdeaSnapshot имеют source = "local_builtin",
++ * localIdeaId = string, chosenBy = null.
+  */
+ export interface ActivityHistoryDoc {
+   id: string;
+   coupleId: string;
+-  activityId: string;
+-  chosenBy: string;
+-  chosenAt: FirestoreTimestamp;
++  // ── Поля от acceptActivity (старые записи) ──
++  activityId: string | null;
++  chosenBy: string | null;
++  chosenAt: FirestoreTimestamp | null;
++  // ── Поля от saveActivityIdeaSnapshot (новые записи) ──
++  source?: "local_builtin";
++  localIdeaId?: string;
++  title?: string;
++  description?: string;
++  emoji?: string;
++  categories?: string[];
++  durationMinutes?: number | null;
++  budgetLevel?: BudgetLevel;
++  locationType?: string;
++  vibe?: string;
++  preparation?: string | null;
++  savedBy?: string;
++  savedAt?: FirestoreTimestamp;
++  createdAt?: FirestoreTimestamp;
+ }
+ 
+ /**
+diff --git a/pairapp-backend/functions/src/utils/validation.ts b/pairapp-backend/functions/src/utils/validation.ts
+index 89f0d8f..59cc607 100644
+--- a/pairapp-backend/functions/src/utils/validation.ts
++++ b/pairapp-backend/functions/src/utils/validation.ts
+@@ -161,6 +161,23 @@ export const removeFcmTokenSchema = z.object({
+   fcmToken: z.string().min(1),
+ });
+ 
++export const saveActivityIdeaSnapshotSchema = z.object({
++  localIdeaId: z.string().trim().min(1).max(60),
++  title: z.string().trim().min(1).max(200),
++  description: z.string().trim().min(1).max(1000),
++  emoji: z.string().trim().min(1).max(10),
++  categories: z.array(z.string().trim().min(1).max(60)).min(1).max(10),
++  durationMinutes: z.number().int().positive().nullish(),
++  budgetLevel: z.enum(["free", "low", "medium"]),
++  locationType: z.enum(["home", "outside", "any"]),
++  vibe: z.enum(["calm", "fun", "romantic", "deep", "spontaneous", "cozy"]),
++  preparation: z.string().trim().max(500).nullish(),
++});
++
++export const removeSavedActivityIdeaSchema = z.object({
++  historyId: z.string().trim().min(1),
++});
++
+ /**
+  * Прогоняет данные через Zod-схему и конвертирует ошибку валидации
+  * в стандартный HttpsError('invalid-argument', ...).
+diff --git a/pairapp_mobile/lib/features/activities/activities_screen.dart b/pairapp_mobile/lib/features/activities/activities_screen.dart
+index 18ba205..19e1fb7 100644
+--- a/pairapp_mobile/lib/features/activities/activities_screen.dart
++++ b/pairapp_mobile/lib/features/activities/activities_screen.dart
+@@ -1,38 +1,100 @@
+ import 'package:flutter/material.dart';
+-import '../../theme/app_colors.dart';
++
++import '../../shared/models/saved_activity.dart';
++import '../../shared/services/activity_service.dart';
++import '../../shared/services/user_service.dart';
+ import '../../shared/widgets/app_card.dart';
++import '../../theme/app_colors.dart';
+ import '../randomizer/randomizer_screen.dart';
+ 
+-class ActivitiesScreen extends StatelessWidget {
++class ActivitiesScreen extends StatefulWidget {
+   const ActivitiesScreen({super.key});
+ 
++  @override
++  State<ActivitiesScreen> createState() => _ActivitiesScreenState();
++}
++
++class _ActivitiesScreenState extends State<ActivitiesScreen> {
++  final _userService = UserService();
++  final _activityService = ActivityService();
++
++  String? _coupleId;
++  bool _loadingProfile = true;
++  final Set<String> _removingIds = {};
++
++  @override
++  void initState() {
++    super.initState();
++    _loadProfile();
++  }
++
++  Future<void> _loadProfile() async {
++    try {
++      final user = await _userService.getCurrentUserProfile();
++      if (!mounted) return;
++      setState(() {
++        _coupleId = user?.currentCoupleId;
++        _loadingProfile = false;
++      });
++    } catch (_) {
++      if (!mounted) return;
++      setState(() => _loadingProfile = false);
++    }
++  }
++
++  Future<void> _removeIdea(String historyId) async {
++    setState(() => _removingIds.add(historyId));
++    final ok = await _activityService.removeSaved(historyId);
++    if (!mounted) return;
++    setState(() => _removingIds.remove(historyId));
++    if (!ok) {
++      ScaffoldMessenger.of(context).showSnackBar(
++        SnackBar(
++          content: const Text('Не удалось удалить. Попробуйте ещё раз'),
++          backgroundColor: AppColors.bgCardLight,
++          behavior: SnackBarBehavior.floating,
++          shape:
++              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
++          margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
++        ),
++      );
++    }
++  }
++
+   @override
+   Widget build(BuildContext context) {
+     return Scaffold(
+       body: Container(
+         decoration: const BoxDecoration(gradient: AppColors.bgGradient),
+         child: SafeArea(
+-          child: SingleChildScrollView(
+-            padding: const EdgeInsets.symmetric(horizontal: 20),
+-            child: Column(
+-              crossAxisAlignment: CrossAxisAlignment.start,
+-              children: [
+-                const SizedBox(height: 16),
+-                Text(
+-                  'Активности',
+-                  style: Theme.of(context).textTheme.displayMedium,
+-                ),
+-                const SizedBox(height: 4),
+-                const Text(
+-                  'Что бы вы хотели сделать вместе?',
+-                  style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
+-                ),
+-                const SizedBox(height: 24),
+-                _buildActivityCards(context),
+-                const SizedBox(height: 28),
+-                _buildRecentIdeas(context),
+-                const SizedBox(height: 24),
+-              ],
++          child: RefreshIndicator(
++            onRefresh: _loadProfile,
++            color: AppColors.purple,
++            backgroundColor: AppColors.bgCard,
++            child: SingleChildScrollView(
++              physics: const AlwaysScrollableScrollPhysics(),
++              padding: const EdgeInsets.symmetric(horizontal: 20),
++              child: Column(
++                crossAxisAlignment: CrossAxisAlignment.start,
++                children: [
++                  const SizedBox(height: 16),
++                  Text(
++                    'Активности',
++                    style: Theme.of(context).textTheme.displayMedium,
++                  ),
++                  const SizedBox(height: 4),
++                  const Text(
++                    'Что бы вы хотели сделать вместе?',
++                    style: TextStyle(
++                        fontSize: 14, color: AppColors.textSecondary),
++                  ),
++                  const SizedBox(height: 24),
++                  _buildActivityCards(context),
++                  const SizedBox(height: 28),
++                  _buildSavedIdeasSection(context),
++                  const SizedBox(height: 32),
++                ],
++              ),
+             ),
+           ),
+         ),
+@@ -42,9 +104,9 @@ class ActivitiesScreen extends StatelessWidget {
+ 
+   Widget _buildActivityCards(BuildContext context) {
+     final cards = [
+-      _ActivityCard(
++      _ActivityCardData(
+         icon: Icons.shuffle_rounded,
+-        title: 'Рандом занятие',
++        title: 'Идеи для нас',
+         subtitle: 'Случайная идея для вас двоих',
+         gradient: const LinearGradient(
+           colors: [Color(0xFF7C5CFC), Color(0xFF9D7FFF)],
+@@ -56,7 +118,7 @@ class ActivitiesScreen extends StatelessWidget {
+           MaterialPageRoute(builder: (_) => const RandomizerScreen()),
+         ),
+       ),
+-      _ActivityCard(
++      _ActivityCardData(
+         icon: Icons.home_outlined,
+         title: 'Бытовой рандомайзер',
+         subtitle: 'Кто что делает сегодня дома',
+@@ -67,7 +129,7 @@ class ActivitiesScreen extends StatelessWidget {
+         ),
+         onTap: () {},
+       ),
+-      _ActivityCard(
++      _ActivityCardData(
+         icon: Icons.quiz_outlined,
+         title: 'Квизы для пары',
+         subtitle: 'Насколько вы знаете друг друга?',
+@@ -78,7 +140,7 @@ class ActivitiesScreen extends StatelessWidget {
+         ),
+         onTap: () {},
+       ),
+-      _ActivityCard(
++      _ActivityCardData(
+         icon: Icons.favorite_border_rounded,
+         title: 'Список желаний',
+         subtitle: 'Мечты и планы на будущее',
+@@ -98,13 +160,11 @@ class ActivitiesScreen extends StatelessWidget {
+       crossAxisSpacing: 12,
+       mainAxisSpacing: 12,
+       childAspectRatio: 0.9,
+-      children: cards
+-          .map((card) => _buildActivityCard(card))
+-          .toList(),
++      children: cards.map(_buildActivityCard).toList(),
+     );
+   }
+ 
+-  Widget _buildActivityCard(_ActivityCard card) {
++  Widget _buildActivityCard(_ActivityCardData card) {
+     return GestureDetector(
+       onTap: card.onTap,
+       child: Container(
+@@ -114,7 +174,7 @@ class ActivitiesScreen extends StatelessWidget {
+           borderRadius: BorderRadius.circular(20),
+           boxShadow: [
+             BoxShadow(
+-              color: (card.gradient.colors.first).withValues(alpha: 0.3),
++              color: card.gradient.colors.first.withValues(alpha: 0.3),
+               blurRadius: 16,
+               offset: const Offset(0, 4),
+             ),
+@@ -154,65 +214,300 @@ class ActivitiesScreen extends StatelessWidget {
+     );
+   }
+ 
+-  Widget _buildRecentIdeas(BuildContext context) {
+-    final recentIdeas = [
+-      'Приготовить пиццу с нуля 🍕',
+-      'Посмотреть закат с горы 🌄',
+-      'Сыграть в монополию 🎲',
+-    ];
++  // ── Saved Ideas Section ───────────────────────────────────────────────────
+ 
++  Widget _buildSavedIdeasSection(BuildContext context) {
+     return Column(
+       crossAxisAlignment: CrossAxisAlignment.start,
+       children: [
+-        Text(
+-          'Недавние идеи',
+-          style: Theme.of(context).textTheme.titleLarge,
++        Row(
++          children: [
++            Text(
++              'Сохранённые идеи',
++              style: Theme.of(context).textTheme.titleLarge,
++            ),
++            const SizedBox(width: 8),
++            const Text('❤️', style: TextStyle(fontSize: 16)),
++          ],
+         ),
+         const SizedBox(height: 12),
+-        ...recentIdeas.map((idea) => Padding(
+-              padding: const EdgeInsets.only(bottom: 10),
+-              child: AppCard(
+-                child: Row(
+-                  children: [
+-                    Container(
+-                      width: 36,
+-                      height: 36,
+-                      decoration: BoxDecoration(
+-                        color: AppColors.purple.withValues(alpha: 0.1),
+-                        borderRadius: BorderRadius.circular(10),
+-                      ),
+-                      child: const Icon(Icons.lightbulb_outline,
+-                          color: AppColors.lavender, size: 18),
++        _buildSavedIdeasBody(),
++      ],
++    );
++  }
++
++  Widget _buildSavedIdeasBody() {
++    if (_loadingProfile) {
++      return const Center(
++        child: Padding(
++          padding: EdgeInsets.symmetric(vertical: 32),
++          child: CircularProgressIndicator(color: AppColors.purple),
++        ),
++      );
++    }
++
++    final coupleId = _coupleId;
++    if (coupleId == null || coupleId.isEmpty) {
++      return _buildEmptyState(
++        emoji: '👫',
++        title: 'Создайте пару',
++        subtitle: 'Сохранённые идеи появятся, когда вы пригласите партнёра',
++      );
++    }
++
++    return StreamBuilder<List<SavedActivity>>(
++      stream: _activityService.watchSavedIdeas(coupleId),
++      builder: (context, snapshot) {
++        if (snapshot.connectionState == ConnectionState.waiting) {
++          return const Center(
++            child: Padding(
++              padding: EdgeInsets.symmetric(vertical: 32),
++              child: CircularProgressIndicator(color: AppColors.purple),
++            ),
++          );
++        }
++
++        if (snapshot.hasError) {
++          return _buildEmptyState(
++            emoji: '⚠️',
++            title: 'Ошибка загрузки',
++            subtitle: 'Потяните вниз, чтобы обновить',
++          );
++        }
++
++        final ideas = snapshot.data ?? [];
++        if (ideas.isEmpty) {
++          return _buildEmptyState(
++            emoji: '💡',
++            title: 'Пока нет сохранённых идей',
++            subtitle:
++                'Откройте «Идеи для нас» и сохраните что-нибудь понравившееся',
++          );
++        }
++
++        return Column(
++          children: ideas
++              .map((saved) => Padding(
++                    padding: const EdgeInsets.only(bottom: 10),
++                    child: _buildSavedIdeaCard(saved),
++                  ))
++              .toList(),
++        );
++      },
++    );
++  }
++
++  Widget _buildSavedIdeaCard(SavedActivity saved) {
++    final isRemoving = _removingIds.contains(saved.historyId);
++
++    return AppCard(
++      child: Row(
++        crossAxisAlignment: CrossAxisAlignment.start,
++        children: [
++          // Emoji avatar
++          Container(
++            width: 44,
++            height: 44,
++            decoration: BoxDecoration(
++              color: AppColors.bgCardLight,
++              borderRadius: BorderRadius.circular(12),
++            ),
++            child: Center(
++              child: Text(
++                saved.emoji ?? '💡',
++                style: const TextStyle(fontSize: 22),
++              ),
++            ),
++          ),
++          const SizedBox(width: 12),
++          // Text content
++          Expanded(
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                Text(
++                  saved.displayTitle,
++                  style: const TextStyle(
++                    fontSize: 14,
++                    fontWeight: FontWeight.w600,
++                    color: AppColors.textPrimary,
++                  ),
++                ),
++                if (saved.description != null) ...[
++                  const SizedBox(height: 4),
++                  Text(
++                    saved.description!,
++                    maxLines: 2,
++                    overflow: TextOverflow.ellipsis,
++                    style: const TextStyle(
++                      fontSize: 12,
++                      color: AppColors.textSecondary,
++                      height: 1.4,
+                     ),
+-                    const SizedBox(width: 12),
+-                    Expanded(
+-                      child: Text(
+-                        idea,
+-                        style: const TextStyle(
+-                          fontSize: 14,
+-                          color: AppColors.textPrimary,
+-                        ),
+-                      ),
++                  ),
++                ],
++                if (saved.categories.isNotEmpty) ...[
++                  const SizedBox(height: 8),
++                  Wrap(
++                    spacing: 6,
++                    children: saved.categories
++                        .take(2)
++                        .map((c) => Container(
++                              padding: const EdgeInsets.symmetric(
++                                  horizontal: 8, vertical: 3),
++                              decoration: BoxDecoration(
++                                color: AppColors.purple.withValues(alpha: 0.12),
++                                borderRadius: BorderRadius.circular(20),
++                              ),
++                              child: Text(
++                                c,
++                                style: const TextStyle(
++                                  fontSize: 11,
++                                  color: AppColors.lavender,
++                                ),
++                              ),
++                            ))
++                        .toList(),
++                  ),
++                ],
++                if (saved.displayDate != null) ...[
++                  const SizedBox(height: 6),
++                  Text(
++                    _formatDate(saved.displayDate!),
++                    style: const TextStyle(
++                      fontSize: 11,
++                      color: AppColors.textMuted,
+                     ),
+-                    const Icon(Icons.arrow_forward_ios,
+-                        size: 14, color: AppColors.textMuted),
+-                  ],
++                  ),
++                ],
++              ],
++            ),
++          ),
++          const SizedBox(width: 8),
++          // Delete button
++          if (isRemoving)
++            const SizedBox(
++              width: 20,
++              height: 20,
++              child: CircularProgressIndicator(
++                strokeWidth: 2,
++                color: AppColors.textMuted,
++              ),
++            )
++          else
++            GestureDetector(
++              onTap: () => _confirmRemove(saved),
++              child: const Padding(
++                padding: EdgeInsets.all(4),
++                child: Icon(
++                  Icons.close_rounded,
++                  size: 18,
++                  color: AppColors.textMuted,
+                 ),
+               ),
+-            )),
+-      ],
++            ),
++        ],
++      ),
++    );
++  }
++
++  void _confirmRemove(SavedActivity saved) {
++    showDialog<bool>(
++      context: context,
++      builder: (ctx) => AlertDialog(
++        backgroundColor: AppColors.bgCard,
++        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
++        title: const Text(
++          'Удалить идею?',
++          style: TextStyle(color: AppColors.textPrimary, fontSize: 17),
++        ),
++        content: Text(
++          '"${saved.displayTitle}" будет удалена из сохранённых для вашей пары.',
++          style: const TextStyle(
++              color: AppColors.textSecondary, fontSize: 14, height: 1.4),
++        ),
++        actions: [
++          TextButton(
++            onPressed: () => Navigator.pop(ctx),
++            child: const Text(
++              'Отмена',
++              style: TextStyle(color: AppColors.textSecondary),
++            ),
++          ),
++          TextButton(
++            onPressed: () {
++              Navigator.pop(ctx);
++              _removeIdea(saved.historyId);
++            },
++            child: const Text(
++              'Удалить',
++              style: TextStyle(color: AppColors.roseAccent),
++            ),
++          ),
++        ],
++      ),
++    );
++  }
++
++  Widget _buildEmptyState({
++    required String emoji,
++    required String title,
++    required String subtitle,
++  }) {
++    return Container(
++      width: double.infinity,
++      padding: const EdgeInsets.symmetric(vertical: 36, horizontal: 24),
++      decoration: BoxDecoration(
++        color: AppColors.bgCard,
++        borderRadius: BorderRadius.circular(20),
++        border: Border.all(color: AppColors.bgCardLight),
++      ),
++      child: Column(
++        children: [
++          Text(emoji, style: const TextStyle(fontSize: 36)),
++          const SizedBox(height: 12),
++          Text(
++            title,
++            style: const TextStyle(
++              fontSize: 16,
++              fontWeight: FontWeight.w600,
++              color: AppColors.textPrimary,
++            ),
++            textAlign: TextAlign.center,
++          ),
++          const SizedBox(height: 6),
++          Text(
++            subtitle,
++            style: const TextStyle(
++              fontSize: 13,
++              color: AppColors.textMuted,
++              height: 1.4,
++            ),
++            textAlign: TextAlign.center,
++          ),
++        ],
++      ),
+     );
+   }
++
++  String _formatDate(DateTime dt) {
++    final now = DateTime.now();
++    final diff = now.difference(dt);
++    if (diff.inDays == 0) return 'Сегодня';
++    if (diff.inDays == 1) return 'Вчера';
++    if (diff.inDays < 7) return '${diff.inDays} дн. назад';
++    return '${dt.day}.${dt.month.toString().padLeft(2, '0')}.${dt.year}';
++  }
+ }
+ 
+-class _ActivityCard {
++class _ActivityCardData {
+   final IconData icon;
+   final String title;
+   final String subtitle;
+   final LinearGradient gradient;
+   final VoidCallback onTap;
+ 
+-  _ActivityCard({
++  const _ActivityCardData({
+     required this.icon,
+     required this.title,
+     required this.subtitle,
+diff --git a/pairapp_mobile/lib/features/randomizer/randomizer_screen.dart b/pairapp_mobile/lib/features/randomizer/randomizer_screen.dart
+index 74c14bb..33d948f 100644
+--- a/pairapp_mobile/lib/features/randomizer/randomizer_screen.dart
++++ b/pairapp_mobile/lib/features/randomizer/randomizer_screen.dart
+@@ -1,8 +1,11 @@
+-import 'dart:math';
+ import 'package:flutter/material.dart';
+-import '../../theme/app_colors.dart';
+-import '../../shared/models/mock_data.dart';
++
++import '../../shared/models/activity_idea.dart';
++import '../../shared/models/app_user.dart';
++import '../../shared/services/activity_service.dart';
++import '../../shared/services/user_service.dart';
+ import '../../shared/widgets/gradient_button.dart';
++import '../../theme/app_colors.dart';
+ 
+ class RandomizerScreen extends StatefulWidget {
+   const RandomizerScreen({super.key});
+@@ -13,21 +16,33 @@ class RandomizerScreen extends StatefulWidget {
+ 
+ class _RandomizerScreenState extends State<RandomizerScreen>
+     with SingleTickerProviderStateMixin {
++  final _activityService = ActivityService();
++  final _userService = UserService();
++
+   late AnimationController _controller;
+-  late Animation<double> _scaleAnim;
+-  String _currentActivity = MockData.randomActivities[0];
+-  final _random = Random();
++  late Animation<double> _fadeAnim;
++  late Animation<Offset> _slideAnim;
++
++  AppUser? _currentUser;
++  ActivityIdea? _currentIdea;
++  String? _selectedCategory;
++  bool _isSaving = false;
+ 
+   @override
+   void initState() {
+     super.initState();
++
+     _controller = AnimationController(
+       vsync: this,
+-      duration: const Duration(milliseconds: 300),
+-    );
+-    _scaleAnim = Tween<double>(begin: 1.0, end: 0.9).animate(
+-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
++      duration: const Duration(milliseconds: 280),
+     );
++    _fadeAnim = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
++    _slideAnim = Tween<Offset>(
++      begin: const Offset(0.06, 0),
++      end: Offset.zero,
++    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
++
++    _loadAndShow();
+   }
+ 
+   @override
+@@ -36,13 +51,66 @@ class _RandomizerScreenState extends State<RandomizerScreen>
+     super.dispose();
+   }
+ 
+-  void _nextActivity() async {
+-    await _controller.forward();
+-    setState(() {
+-      _currentActivity = MockData.randomActivities[
+-          _random.nextInt(MockData.randomActivities.length)];
+-    });
+-    await _controller.reverse();
++  Future<void> _loadAndShow() async {
++    final user = await _userService.getCurrentUserProfile();
++    if (!mounted) return;
++    setState(() => _currentUser = user);
++    _showNewIdea();
++  }
++
++  void _showNewIdea() {
++    final idea = _activityService.randomIdea(
++      category: _selectedCategory,
++      excludeId: _currentIdea?.id,
++    );
++    setState(() => _currentIdea = idea);
++    _controller.forward(from: 0);
++  }
++
++  void _selectCategory(String? category) {
++    if (_selectedCategory == category) {
++      setState(() => _selectedCategory = null);
++    } else {
++      setState(() => _selectedCategory = category);
++    }
++    _showNewIdea();
++  }
++
++  Future<void> _saveIdea() async {
++    final idea = _currentIdea;
++    if (idea == null) return;
++
++    final user = _currentUser;
++    if (user == null || !user.hasCouple) {
++      _showSnackBar('Сначала создайте пару 💜');
++      return;
++    }
++
++    setState(() => _isSaving = true);
++    final result = await _activityService.saveIdea(idea);
++    if (!mounted) return;
++    setState(() => _isSaving = false);
++
++    switch (result) {
++      case SaveIdeaResult.saved:
++        _showSnackBar('Идея сохранена ❤️');
++      case SaveIdeaResult.alreadySaved:
++        _showSnackBar('Эта идея уже сохранена');
++      case SaveIdeaResult.error:
++        _showSnackBar('Не удалось сохранить. Попробуйте ещё раз');
++    }
++  }
++
++  void _showSnackBar(String text) {
++    ScaffoldMessenger.of(context).showSnackBar(
++      SnackBar(
++        content: Text(text),
++        backgroundColor: AppColors.bgCardLight,
++        behavior: SnackBarBehavior.floating,
++        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
++        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
++      ),
++    );
+   }
+ 
+   @override
+@@ -52,41 +120,18 @@ class _RandomizerScreenState extends State<RandomizerScreen>
+         decoration: const BoxDecoration(gradient: AppColors.bgGradient),
+         child: SafeArea(
+           child: Column(
++            crossAxisAlignment: CrossAxisAlignment.start,
+             children: [
+               _buildAppBar(context),
++              _buildCategoryChips(),
+               Expanded(
+-                child: Padding(
+-                  padding: const EdgeInsets.symmetric(horizontal: 24),
+-                  child: Column(
+-                    mainAxisAlignment: MainAxisAlignment.center,
+-                    children: [
+-                      _buildGlowCircle(),
+-                      const SizedBox(height: 32),
+-                      ScaleTransition(
+-                        scale: _scaleAnim,
+-                        child: _buildActivityCard(),
+-                      ),
+-                      const SizedBox(height: 40),
+-                      GradientButton(
+-                        label: 'Ещё вариант',
+-                        icon: Icons.refresh_rounded,
+-                        width: double.infinity,
+-                        height: 56,
+-                        onTap: _nextActivity,
+-                      ),
+-                      const SizedBox(height: 16),
+-                      TextButton.icon(
+-                        onPressed: () {},
+-                        icon: const Icon(Icons.favorite_border,
+-                            size: 16, color: AppColors.textMuted),
+-                        label: const Text(
+-                          'Сохранить идею',
+-                          style: TextStyle(color: AppColors.textMuted),
++                child: _currentIdea == null
++                    ? const Center(
++                        child: CircularProgressIndicator(
++                          color: AppColors.purple,
+                         ),
+-                      ),
+-                    ],
+-                  ),
+-                ),
++                      )
++                    : _buildContent(),
+               ),
+             ],
+           ),
+@@ -97,17 +142,20 @@ class _RandomizerScreenState extends State<RandomizerScreen>
+ 
+   Widget _buildAppBar(BuildContext context) {
+     return Padding(
+-      padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
++      padding: const EdgeInsets.fromLTRB(8, 8, 16, 4),
+       child: Row(
+         children: [
+           IconButton(
+             onPressed: () => Navigator.pop(context),
+-            icon: const Icon(Icons.arrow_back_ios_new,
+-                color: AppColors.textPrimary, size: 18),
++            icon: const Icon(
++              Icons.arrow_back_ios_new,
++              color: AppColors.textPrimary,
++              size: 18,
++            ),
+           ),
+           Expanded(
+             child: Text(
+-              'Рандом занятие',
++              'Идеи для нас',
+               style: Theme.of(context).textTheme.titleLarge,
+               textAlign: TextAlign.center,
+             ),
+@@ -118,69 +166,138 @@ class _RandomizerScreenState extends State<RandomizerScreen>
+     );
+   }
+ 
+-  Widget _buildGlowCircle() {
+-    return Stack(
+-      alignment: Alignment.center,
+-      children: [
+-        Container(
+-          width: 140,
+-          height: 140,
+-          decoration: const BoxDecoration(
+-            shape: BoxShape.circle,
+-            gradient: AppColors.heartGlow,
+-          ),
+-        ),
+-        Container(
+-          width: 88,
+-          height: 88,
+-          decoration: BoxDecoration(
+-            gradient: AppColors.purpleGradient,
+-            shape: BoxShape.circle,
+-            boxShadow: [
+-              BoxShadow(
+-                color: AppColors.purple.withValues(alpha: 0.5),
+-                blurRadius: 24,
+-                offset: const Offset(0, 4),
++  Widget _buildCategoryChips() {
++    final categories = _activityService.allCategories;
++    return SizedBox(
++      height: 44,
++      child: ListView.separated(
++        scrollDirection: Axis.horizontal,
++        padding: const EdgeInsets.symmetric(horizontal: 16),
++        itemCount: categories.length,
++        separatorBuilder: (_, __) => const SizedBox(width: 8),
++        itemBuilder: (context, index) {
++          final cat = categories[index];
++          final selected = _selectedCategory == cat;
++          return GestureDetector(
++            onTap: () => _selectCategory(cat),
++            child: AnimatedContainer(
++              duration: const Duration(milliseconds: 200),
++              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
++              decoration: BoxDecoration(
++                color: selected ? AppColors.purple : AppColors.bgCard,
++                borderRadius: BorderRadius.circular(20),
++                border: Border.all(
++                  color: selected ? AppColors.purple : AppColors.bgCardLight,
++                ),
+               ),
+-            ],
++              child: Text(
++                cat,
++                style: TextStyle(
++                  fontSize: 13,
++                  color: selected
++                      ? Colors.white
++                      : AppColors.textSecondary,
++                  fontWeight:
++                      selected ? FontWeight.w600 : FontWeight.normal,
++                ),
++              ),
++            ),
++          );
++        },
++      ),
++    );
++  }
++
++  Widget _buildContent() {
++    final idea = _currentIdea!;
++    return Padding(
++      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
++      child: Column(
++        children: [
++          Expanded(
++            child: SlideTransition(
++              position: _slideAnim,
++              child: FadeTransition(
++                opacity: _fadeAnim,
++                child: _buildIdeaCard(idea),
++              ),
++            ),
+           ),
+-          child: const Icon(Icons.shuffle_rounded,
+-              color: Colors.white, size: 38),
+-        ),
+-      ],
++          const SizedBox(height: 16),
++          _buildButtons(),
++          const SizedBox(height: 16),
++        ],
++      ),
+     );
+   }
+ 
+-  Widget _buildActivityCard() {
++  Widget _buildIdeaCard(ActivityIdea idea) {
+     return Container(
+       width: double.infinity,
+-      padding: const EdgeInsets.all(28),
++      padding: const EdgeInsets.all(24),
+       decoration: BoxDecoration(
+         color: AppColors.bgCard,
+         borderRadius: BorderRadius.circular(24),
+         border: Border.all(color: AppColors.bgCardLight),
+         boxShadow: [
+           BoxShadow(
+-            color: AppColors.purple.withValues(alpha: 0.08),
+-            blurRadius: 30,
++            color: AppColors.purple.withValues(alpha: 0.1),
++            blurRadius: 32,
+             offset: const Offset(0, 8),
+           ),
+         ],
+       ),
+       child: Column(
++        crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+-          const Text(
+-            'Идея для вас 💜',
+-            style: TextStyle(
+-              fontSize: 13,
+-              color: AppColors.textMuted,
+-              letterSpacing: 0.5,
+-            ),
++          // Emoji + категория
++          Row(
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              Container(
++                width: 64,
++                height: 64,
++                decoration: BoxDecoration(
++                  color: AppColors.bgCardLight,
++                  borderRadius: BorderRadius.circular(18),
++                ),
++                child: Center(
++                  child: Text(
++                    idea.emoji,
++                    style: const TextStyle(fontSize: 32),
++                  ),
++                ),
++              ),
++              const SizedBox(width: 14),
++              Expanded(
++                child: Column(
++                  crossAxisAlignment: CrossAxisAlignment.start,
++                  children: [
++                    Wrap(
++                      spacing: 6,
++                      runSpacing: 6,
++                      children: idea.categories
++                          .take(2)
++                          .map((c) => _smallChip(c, AppColors.purple))
++                          .toList(),
++                    ),
++                    const SizedBox(height: 8),
++                    Text(
++                      idea.vibeLabel,
++                      style: const TextStyle(
++                        fontSize: 12,
++                        color: AppColors.textMuted,
++                      ),
++                    ),
++                  ],
++                ),
++              ),
++            ],
+           ),
+-          const SizedBox(height: 16),
++          const SizedBox(height: 20),
++          // Title
+           Text(
+-            _currentActivity,
+-            textAlign: TextAlign.center,
++            idea.title,
+             style: const TextStyle(
+               fontSize: 22,
+               fontWeight: FontWeight.bold,
+@@ -188,8 +305,156 @@ class _RandomizerScreenState extends State<RandomizerScreen>
+               height: 1.3,
+             ),
+           ),
++          const SizedBox(height: 12),
++          // Description
++          Text(
++            idea.description,
++            style: const TextStyle(
++              fontSize: 15,
++              color: AppColors.textSecondary,
++              height: 1.5,
++            ),
++          ),
++          // Preparation hint
++          if (idea.preparation != null) ...[
++            const SizedBox(height: 14),
++            Container(
++              padding:
++                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
++              decoration: BoxDecoration(
++                color: AppColors.bgCardLight,
++                borderRadius: BorderRadius.circular(10),
++              ),
++              child: Row(
++                crossAxisAlignment: CrossAxisAlignment.start,
++                children: [
++                  const Text('📌 ', style: TextStyle(fontSize: 13)),
++                  Expanded(
++                    child: Text(
++                      idea.preparation!,
++                      style: const TextStyle(
++                        fontSize: 13,
++                        color: AppColors.textMuted,
++                        height: 1.4,
++                      ),
++                    ),
++                  ),
++                ],
++              ),
++            ),
++          ],
++          const SizedBox(height: 20),
++          // Meta chips: duration / budget
++          Wrap(
++            spacing: 8,
++            runSpacing: 8,
++            children: [
++              _metaChip(Icons.access_time_rounded, idea.durationLabel),
++              _metaChip(
++                idea.budget == ActivityBudget.free
++                    ? Icons.money_off_rounded
++                    : Icons.payments_outlined,
++                idea.budgetLabel,
++              ),
++            ],
++          ),
++        ],
++      ),
++    );
++  }
++
++  Widget _smallChip(String label, Color color) {
++    return Container(
++      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
++      decoration: BoxDecoration(
++        color: color.withValues(alpha: 0.15),
++        borderRadius: BorderRadius.circular(20),
++        border: Border.all(color: color.withValues(alpha: 0.3)),
++      ),
++      child: Text(
++        label,
++        style: TextStyle(
++          fontSize: 12,
++          color: color,
++          fontWeight: FontWeight.w500,
++        ),
++      ),
++    );
++  }
++
++  Widget _metaChip(IconData icon, String label) {
++    return Container(
++      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
++      decoration: BoxDecoration(
++        color: AppColors.bgCardLight,
++        borderRadius: BorderRadius.circular(20),
++      ),
++      child: Row(
++        mainAxisSize: MainAxisSize.min,
++        children: [
++          Icon(icon, size: 13, color: AppColors.textMuted),
++          const SizedBox(width: 5),
++          Text(
++            label,
++            style: const TextStyle(
++              fontSize: 12,
++              color: AppColors.textMuted,
++            ),
++          ),
+         ],
+       ),
+     );
+   }
++
++  Widget _buildButtons() {
++    return Column(
++      children: [
++        GradientButton(
++          label: 'Ещё идея',
++          icon: Icons.shuffle_rounded,
++          width: double.infinity,
++          height: 54,
++          onTap: _showNewIdea,
++        ),
++        const SizedBox(height: 10),
++        SizedBox(
++          width: double.infinity,
++          height: 50,
++          child: OutlinedButton.icon(
++            onPressed: _isSaving ? null : _saveIdea,
++            icon: _isSaving
++                ? const SizedBox(
++                    width: 14,
++                    height: 14,
++                    child: CircularProgressIndicator(
++                      strokeWidth: 2,
++                      color: AppColors.roseAccent,
++                    ),
++                  )
++                : const Icon(
++                    Icons.favorite_rounded,
++                    size: 16,
++                    color: AppColors.roseAccent,
++                  ),
++            label: Text(
++              _isSaving ? 'Сохраняем...' : 'Сохранить ❤️',
++              style: const TextStyle(
++                color: AppColors.roseAccent,
++                fontWeight: FontWeight.w600,
++              ),
++            ),
++            style: OutlinedButton.styleFrom(
++              side: const BorderSide(
++                color: AppColors.roseAccent,
++                width: 1.2,
++              ),
++              shape: RoundedRectangleBorder(
++                borderRadius: BorderRadius.circular(14),
++              ),
++            ),
++          ),
++        ),
++      ],
++    );
++  }
+ }
+diff --git a/pairapp_mobile/lib/shared/data/activity_ideas_data.dart b/pairapp_mobile/lib/shared/data/activity_ideas_data.dart
+new file mode 100644
+index 0000000..18954fb
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/data/activity_ideas_data.dart
+@@ -0,0 +1,1998 @@
++import '../models/activity_idea.dart';
++
++/// Встроенный список идей для пары.
++/// 152 идеи, 11 категорий.
++const List<ActivityIdea> kBuiltinActivityIdeas = [
++  // ── ДОМА ──────────────────────────────────────────────────────────────────
++
++  ActivityIdea(
++    id: 'home_001',
++    title: 'Мини-кинотеатр дома',
++    description:
++        'Устройте настоящий кинотеатр: задёрните шторы, разложите подушки и пледы, приготовьте попкорн. Каждый выбирает один фильм — смотрите оба.',
++    emoji: '🎬',
++    categories: ['дома', 'уют'],
++    durationMinutes: 180,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  ActivityIdea(
++    id: 'home_002',
++    title: 'Приготовьте ужин из 3 случайных ингредиентов',
++    description:
++        'Закройте глаза и вытащите три продукта из холодильника или шкафа. Приготовьте из них что-нибудь вместе — без рецепта. Удивите себя.',
++    emoji: '🍳',
++    categories: ['дома', 'еда', 'весело'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'home_003',
++    title: 'Настольные игры при свечах',
++    description:
++        'Выберите любую настольную игру и сыграйте при свечах. Шахматы, карты, домино — неважно. Атмосфера решает.',
++    emoji: '🕯️',
++    categories: ['дома', 'уют'],
++    durationMinutes: 90,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  ActivityIdea(
++    id: 'home_004',
++    title: 'Рисуйте портреты друг друга',
++    description:
++        'Возьмите бумагу и что найдёте — карандаши, ручки, акварель. Нарисуйте партнёра за 10 минут не отрывая руки. Потом сравните.',
++    emoji: '🎨',
++    categories: ['дома', 'весело'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'home_005',
++    title: 'Напишите друг другу 5 вещей, за которые благодарны',
++    description:
++        'Каждый пишет на бумаге 5 вещей, которые ценит в партнёре прямо сейчас. Обменяйтесь и прочитайте вслух.',
++    emoji: '💌',
++    categories: ['дома', 'романтика', 'глубокие разговоры'],
++    durationMinutes: 20,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'home_006',
++    title: 'Совместная готовка нового рецепта',
++    description:
++        'Найдите рецепт блюда, которое никогда не готовили, и приготовьте его вместе от начала до конца. Разделите роли: один режет, другой мешает.',
++    emoji: '👨‍🍳',
++    categories: ['дома', 'еда'],
++    durationMinutes: 90,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'home_007',
++    title: 'Составьте общий wishlist на этот год',
++    description:
++        'Каждый называет 5 вещей, которые хочет сделать или получить в этом году. Обсудите, что из этого можно сделать вместе.',
++    emoji: '📝',
++    categories: ['дома', 'глубокие разговоры'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'home_008',
++    title: 'Вечер масок и ухода',
++    description:
++        'Нанесите маски для лица, сделайте друг другу массаж рук, включите расслабляющую музыку. Никаких телефонов.',
++    emoji: '🧖',
++    categories: ['дома', 'уют', 'романтика'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'home_009',
++    title: 'Танцы на кухне',
++    description:
++        'Включите музыку и танцуйте прямо на кухне — без правил и без стеснения. Можно выбрать по очереди по треку.',
++    emoji: '💃',
++    categories: ['дома', 'весело'],
++    durationMinutes: 20,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'home_010',
++    title: 'Пицца с нуля',
++    description:
++        'Замесите тесто, выберите начинку и испеките пиццу самостоятельно. Каждый делает свою половину.',
++    emoji: '🍕',
++    categories: ['дома', 'еда'],
++    durationMinutes: 90,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'home_011',
++    title: 'Посмотрите детский мультфильм',
++    description:
++        'Включите любимый мультфильм из детства — своего или партнёра. Расскажите, что он значил для вас.',
++    emoji: '🧸',
++    categories: ['дома', 'уют'],
++    durationMinutes: 90,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  ActivityIdea(
++    id: 'home_012',
++    title: 'Кулинарный челлендж',
++    description:
++        'Каждый готовит что-то одно самостоятельно, не показывая другому. Потом — дегустация и честная оценка.',
++    emoji: '🏆',
++    categories: ['дома', 'еда', 'весело'],
++    durationMinutes: 60,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'home_013',
++    title: 'Читайте вслух друг другу',
++    description:
++        'Возьмите книгу, которую давно хотели прочитать, и читайте по очереди вслух. Останавливайтесь и обсуждайте.',
++    emoji: '📚',
++    categories: ['дома', 'уют', 'глубокие разговоры'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  ActivityIdea(
++    id: 'home_014',
++    title: 'Сборка пазла',
++    description:
++        'Найдите пазл или купите новый. Собирайте вместе — можно под музыку или сериал. Хороший способ просто побыть рядом.',
++    emoji: '🧩',
++    categories: ['дома', 'уют'],
++    durationMinutes: 120,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'home_015',
++    title: 'Вечер настойных коктейлей без алкоголя',
++    description:
++        'Сделайте моктейли из того, что есть: сок, газировка, мята, лимон, ягоды. Украсьте красиво и придумайте название каждому.',
++    emoji: '🍹',
++    categories: ['дома', 'еда', 'уют'],
++    durationMinutes: 40,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  // ── ПРОГУЛКА ─────────────────────────────────────────────────────────────
++
++  ActivityIdea(
++    id: 'walk_001',
++    title: 'Прогулка без телефонов',
++    description:
++        'Оставьте телефоны дома. 30–40 минут идите куда хотите и разговаривайте. Без навигатора, без музыки, без соцсетей.',
++    emoji: '🚶',
++    categories: ['прогулка', 'глубокие разговоры', 'бесплатно'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'walk_002',
++    title: 'Фото-прогулка: ищите красивые детали',
++    description:
++        'У каждого задание: найти 5 красивых или необычных деталей вокруг и сфотографировать. Потом сравните — что заметил каждый.',
++    emoji: '📸',
++    categories: ['прогулка', 'новые впечатления'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'walk_003',
++    title: 'Сходите в место, где давно не были',
++    description:
++        'Вспомните место в городе, которое любили раньше, но забыли. Парк, набережная, старая улица. Вернитесь и поделитесь воспоминаниями.',
++    emoji: '🗺️',
++    categories: ['прогулка', 'новые впечатления', 'глубокие разговоры'],
++    durationMinutes: 90,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'walk_004',
++    title: 'Прогулка до рассвета или заката',
++    description:
++        'Выйдите специально посмотреть на закат или рассвет. Найдите место с хорошим видом — крышу, парк, набережную.',
++    emoji: '🌅',
++    categories: ['прогулка', 'романтика'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'walk_005',
++    title: 'Поездка в незнакомый район',
++    description:
++        'Выберите район города, где почти не бывали. Дойдите пешком и исследуйте без плана — заходите в магазины, кафе, дворы.',
++    emoji: '🏙️',
++    categories: ['прогулка', 'новые впечатления'],
++    durationMinutes: 120,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.spontaneous,
++  ),
++
++  ActivityIdea(
++    id: 'walk_006',
++    title: 'Найдите уличное граффити',
++    description:
++        'Погуляйте по улицам и ищите интересные граффити или стрит-арт. Фотографируйте лучшее и обсуждайте.',
++    emoji: '🎭',
++    categories: ['прогулка', 'новые впечатления', 'бесплатно'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'walk_007',
++    title: 'Прогулка под дождём',
++    description:
++        'Если идёт дождь — выйдите под него. Возьмите один зонт на двоих или наденьте дождевики. Иногда это лучшая прогулка.',
++    emoji: '🌧️',
++    categories: ['прогулка', 'романтика', 'спонтанно'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'walk_008',
++    title: 'Утренняя прогулка с кофе',
++    description:
++        'Встаньте пораньше, возьмите кофе в термосах и пройдитесь по просыпающемуся городу. Тишина и пространство — только ваши.',
++    emoji: '☕',
++    categories: ['прогулка', 'уют'],
++    durationMinutes: 60,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'walk_009',
++    title: 'Пикник в парке',
++    description:
++        'Соберите простые вещи: бутерброды, фрукты, плед. Найдите дерево или траву в парке и проведите час без спешки.',
++    emoji: '🧺',
++    categories: ['прогулка', 'еда', 'романтика'],
++    durationMinutes: 90,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'walk_010',
++    title: 'Посетите рынок или ярмарку',
++    description:
++        'Пройдитесь по местному рынку — не чтобы купить, а чтобы смотреть, пробовать, общаться. Купите одну вещь, которую выберет партнёр.',
++    emoji: '🛍️',
++    categories: ['прогулка', 'новые впечатления'],
++    durationMinutes: 90,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'walk_011',
++    title: 'Покорите ближайшую возвышенность',
++    description:
++        'Найдите холм, горку или смотровую площадку рядом с вами. Поднимитесь и посмотрите на город или природу сверху.',
++    emoji: '⛰️',
++    categories: ['прогулка', 'новые впечатления'],
++    durationMinutes: 90,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.spontaneous,
++  ),
++
++  ActivityIdea(
++    id: 'walk_012',
++    title: 'Пройдите маршрут наугад',
++    description:
++        'На каждом перекрёстке подбросьте монетку: орёл — налево, решка — направо. Идите, куда приведёт случай.',
++    emoji: '🪙',
++    categories: ['прогулка', 'спонтанно', 'бесплатно'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.spontaneous,
++  ),
++
++  ActivityIdea(
++    id: 'walk_013',
++    title: 'Прогулка с музыкой в одном наушнике',
++    description:
++        'Один наушник у каждого. Слушайте одну и ту же музыку и идите рядом. Попробуйте молчать и просто быть рядом.',
++    emoji: '🎵',
++    categories: ['прогулка', 'уют', 'романтика'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.calm,
++  ),
++
++  // ── ЕДА ──────────────────────────────────────────────────────────────────
++
++  ActivityIdea(
++    id: 'food_001',
++    title: 'Блюдо из страны мечты',
++    description:
++        'Выберите страну, куда хотите попасть. Найдите рецепт традиционного блюда оттуда и приготовьте вместе. Включите музыку из той страны.',
++    emoji: '🌍',
++    categories: ['еда', 'дома', 'новые впечатления'],
++    durationMinutes: 90,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'food_002',
++    title: 'Завтрак в постель',
++    description:
++        'Один встаёт пораньше и готовит завтрак другому в постель. На следующий раз — меняетесь ролями.',
++    emoji: '🥞',
++    categories: ['еда', 'дома', 'романтика', 'сюрприз'],
++    durationMinutes: 30,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'food_003',
++    title: 'Дегустация нового чая или кофе',
++    description:
++        'Купите два-три сорта чая или кофе, которые никогда не пробовали. Заварите по очереди и оцените по шкале от 1 до 10.',
++    emoji: '🍵',
++    categories: ['еда', 'дома', 'уют'],
++    durationMinutes: 40,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'food_004',
++    title: 'Тематический ужин',
++    description:
++        'Выберите тему: страна, эпоха, цвет. Все блюда — в рамках темы. Украсьте стол соответственно.',
++    emoji: '🍽️',
++    categories: ['еда', 'дома', 'романтика'],
++    durationMinutes: 120,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'food_005',
++    title: 'Суши дома',
++    description:
++        'Купите набор для суши или нужные ингредиенты. Попробуйте свернуть роллы самостоятельно — получится смешно, но вкусно.',
++    emoji: '🍱',
++    categories: ['еда', 'дома', 'весело'],
++    durationMinutes: 90,
++    budget: ActivityBudget.medium,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'food_006',
++    title: 'Выпечка без рецепта',
++    description:
++        'Испеките что-нибудь, не используя рецепт — только интуицию. Кекс, печенье, хлеб. Посмотрите, что получится.',
++    emoji: '🍪',
++    categories: ['еда', 'дома', 'весело'],
++    durationMinutes: 60,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'food_007',
++    title: 'Зайдите в кафе, где никогда не были',
++    description:
++        'Выберите кафе, мимо которого проходили, но никогда не заходили. Закажите что-то незнакомое из меню.',
++    emoji: '☕',
++    categories: ['еда', 'новые впечатления', 'прогулка'],
++    durationMinutes: 60,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'food_008',
++    title: 'Слепая дегустация',
++    description:
++        'Один готовит или покупает несколько закусок. Другой с закрытыми глазами угадывает, что ест. Потом меняетесь.',
++    emoji: '🙈',
++    categories: ['еда', 'дома', 'весело'],
++    durationMinutes: 30,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'food_009',
++    title: 'Приготовьте любимое блюдо детства',
++    description:
++        'Каждый называет блюдо из детства, которое любил. Выберите одно и приготовьте вместе. Поговорите о детских воспоминаниях.',
++    emoji: '🍲',
++    categories: ['еда', 'дома', 'глубокие разговоры'],
++    durationMinutes: 60,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'food_010',
++    title: 'Ужин при свечах дома',
++    description:
++        'Приготовьте простой ужин, накройте стол красиво, зажгите свечи. Уберите телефоны и просто поговорите за едой.',
++    emoji: '🕯️',
++    categories: ['еда', 'дома', 'романтика'],
++    durationMinutes: 90,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'food_011',
++    title: 'Приготовьте завтрак в необычном месте',
++    description:
++        'Возьмите термос и простые продукты. Съешьте завтрак не дома — в парке, на крыше, на ступеньках.',
++    emoji: '🌄',
++    categories: ['еда', 'прогулка', 'новые впечатления'],
++    durationMinutes: 60,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.spontaneous,
++  ),
++
++  ActivityIdea(
++    id: 'food_012',
++    title: 'Испеките торт на чей-то день рождения заранее',
++    description:
++        'Не ждите особого повода. Испеките торт просто так — раскрасьте его, придумайте ему название и съешьте вместе.',
++    emoji: '🎂',
++    categories: ['еда', 'дома', 'сюрприз'],
++    durationMinutes: 120,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  // ── РАЗГОВОР ─────────────────────────────────────────────────────────────
++
++  ActivityIdea(
++    id: 'talk_001',
++    title: 'Вечер вопросов',
++    description:
++        'По очереди задавайте вопросы друг другу — честно и без осуждения. Начните с простых, заканчивайте глубокими.',
++    emoji: '💬',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'talk_002',
++    title: 'Каждый выбирает песню и объясняет почему',
++    description:
++        'Выберите по одной песне, которая что-то значит лично для вас. Включите и расскажите, с чем она связана.',
++    emoji: '🎶',
++    categories: ['разговор', 'глубокие разговоры', 'дома'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'talk_003',
++    title: 'Расскажите историю из детства, которую не рассказывали',
++    description:
++        'Каждый вспоминает историю из детства, которую ещё не рассказывал партнёру. Чем неожиданнее — тем лучше.',
++    emoji: '🧒',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'talk_004',
++    title: 'Игра "Что бы вы сделали, если..."',
++    description:
++        'По очереди придумывайте гипотетические ситуации и отвечайте честно. Не ограничивайтесь реальным.',
++    emoji: '🤔',
++    categories: ['разговор', 'дома'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'talk_005',
++    title: 'Список мест, куда хотите попасть вместе',
++    description:
++        'Назовите по 5 мест в мире (и рядом), куда хотите поехать вместе. Отметьте на карте и выберите следующий приоритет.',
++    emoji: '✈️',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'talk_006',
++    title: 'Что изменилось за последний год?',
++    description:
++        'Поговорите о том, что в каждом из вас изменилось за последние 12 месяцев. Без оценок, просто — что стало другим.',
++    emoji: '🌱',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 45,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'talk_007',
++    title: 'Расскажите о своём идеальном дне',
++    description:
++        'Каждый описывает свой идеальный день от пробуждения до сна. Без ограничений — где угодно, с кем угодно, делая что угодно.',
++    emoji: '🌞',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'talk_008',
++    title: 'Игра в "правда"',
++    description:
++        'Задавайте друг другу любые вопросы — партнёр обязан ответить честно. Начните мягко, потом углубляйтесь.',
++    emoji: '🎯',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'talk_009',
++    title: 'Обсудите фильм, который видели по-разному',
++    description:
++        'Вспомните фильм, который видели оба, но реакции были разными. Поговорите, почему это так — что зацепило каждого.',
++    emoji: '🎞️',
++    categories: ['разговор', 'дома'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'talk_010',
++    title: 'Поговорите о страхах',
++    description:
++        'Каждый называет три вещи, которых боится — маленьких или больших. Не нужно решать или советовать. Просто слушайте.',
++    emoji: '🌙',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'talk_011',
++    title: 'Что сейчас тебя радует?',
++    description:
++        'Каждый называет три вещи, которые делают его счастливым прямо сейчас — большие и маленькие. Поговорите об этом.',
++    emoji: '😊',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 20,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'talk_012',
++    title: 'Письмо себе через 5 лет',
++    description:
++        'Каждый пишет короткое письмо себе через 5 лет. Запечатайте в конверт, подпишите дату и спрячьте вместе.',
++    emoji: '📬',
++    categories: ['разговор', 'глубокие разговоры', 'дома'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.deep,
++    preparation: 'Нужны бумага, ручки и конверты.',
++  ),
++
++  ActivityIdea(
++    id: 'talk_013',
++    title: 'Поговорите о ваших ролевых моделях',
++    description:
++        'Кем вы восхищаетесь — реальными людьми или героями? Расскажите партнёру и объясните почему.',
++    emoji: '⭐',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  // ── СЮРПРИЗ ───────────────────────────────────────────────────────────────
++
++  ActivityIdea(
++    id: 'surprise_001',
++    title: 'Организуйте неожиданный пикник',
++    description:
++        'Пока партнёр занят чем-то, соберите простую корзину с едой и позовите его на пикник — прямо сейчас. Никакой подготовки заранее.',
++    emoji: '🎁',
++    categories: ['сюрприз', 'романтика', 'прогулка'],
++    durationMinutes: 90,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'surprise_002',
++    title: 'Записка в неожиданном месте',
++    description:
++        'Напишите тёплую записку партнёру и спрячьте в неожиданном месте — в кошельке, в книге, в кармане пальто.',
++    emoji: '💝',
++    categories: ['сюрприз', 'романтика'],
++    durationMinutes: 10,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'surprise_003',
++    title: 'Сделайте что-то, о чём партнёр давно просил',
++    description:
++        'Вспомните одну просьбу партнёра, которую откладывали. Сделайте её сегодня без напоминания.',
++    emoji: '✨',
++    categories: ['сюрприз', 'глубокие разговоры'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'surprise_004',
++    title: 'Устройте тематический вечер без предупреждения',
++    description:
++        'Один готовит вечер на тему (страна, декада, фильм) — украшает, готовит еду, подбирает музыку. Другой узнаёт только когда приходит домой.',
++    emoji: '🪄',
++    categories: ['сюрприз', 'романтика', 'дома'],
++    durationMinutes: 120,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.romantic,
++    preparation: 'Один партнёр готовит заранее.',
++  ),
++
++  ActivityIdea(
++    id: 'surprise_005',
++    title: 'Соберите коллаж из ваших фото',
++    description:
++        'Выберите 10–15 совместных фото и соберите их в коллаж или мини-фотокнигу. Подарите партнёру.',
++    emoji: '🖼️',
++    categories: ['сюрприз', 'романтика', 'дома'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'surprise_006',
++    title: 'Закажите доставку из любимого места партнёра',
++    description:
++        'Узнайте у партнёра (или помните), откуда он любит еду больше всего. Закажите туда без повода.',
++    emoji: '🛵',
++    categories: ['сюрприз', 'еда'],
++    durationMinutes: 45,
++    budget: ActivityBudget.medium,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'surprise_007',
++    title: 'Стикеры по всему дому',
++    description:
++        'Пока партнёр спит или выходил, расклейте по дому стикеры с добрыми словами, смешными рисунками и воспоминаниями.',
++    emoji: '🗒️',
++    categories: ['сюрприз', 'романтика', 'дома'],
++    durationMinutes: 20,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.romantic,
++    preparation: 'Нужны стикеры и маркер.',
++  ),
++
++  ActivityIdea(
++    id: 'surprise_008',
++    title: 'Подарите партнёру "час без обязанностей"',
++    description:
++        'Скажите партнёру: у него есть час, когда вы всё делаете сами. Он может читать, гулять, спать — что хочет. Без вопросов.',
++    emoji: '⏰',
++    categories: ['сюрприз', 'глубокие разговоры'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.calm,
++  ),
++
++  // ── БЕСПЛАТНО ─────────────────────────────────────────────────────────────
++
++  ActivityIdea(
++    id: 'free_001',
++    title: 'Смотрите на звёзды',
++    description:
++        'Найдите место потемнее, возьмите плед и лягте смотреть на небо. Просто так, без цели.',
++    emoji: '⭐',
++    categories: ['бесплатно', 'романтика', 'прогулка'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'free_002',
++    title: 'Посетите бесплатный музей или галерею',
++    description:
++        'Многие музеи имеют бесплатные часы или дни. Найдите такой в вашем городе и сходите.',
++    emoji: '🏛️',
++    categories: ['бесплатно', 'новые впечатления', 'прогулка'],
++    durationMinutes: 120,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'free_003',
++    title: 'Разберите старые фото вместе',
++    description:
++        'Откройте архивы телефона или старые альбомы. Смотрите вместе и рассказывайте истории за каждым фото.',
++    emoji: '📷',
++    categories: ['бесплатно', 'дома', 'глубокие разговоры'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'free_004',
++    title: 'Сделайте упражнения вместе',
++    description:
++        'Короткая совместная тренировка дома или на улице. YouTube-ролик, бег или просто растяжка. Главное — вместе.',
++    emoji: '🏃',
++    categories: ['бесплатно', 'дома', 'прогулка'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'free_005',
++    title: 'Помедитируйте вместе',
++    description:
++        'Найдите медитацию на YouTube или в приложении. 10–15 минут тишины рядом — это больше, чем кажется.',
++    emoji: '🧘',
++    categories: ['бесплатно', 'дома', 'уют'],
++    durationMinutes: 15,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'free_006',
++    title: 'Посмотрите закат на крыше или возвышенности',
++    description:
++        'Найдите место с видом. Возьмите плед или куртки. Молчите и смотрите.',
++    emoji: '🌇',
++    categories: ['бесплатно', 'романтика', 'прогулка'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'free_007',
++    title: 'Напишите совместную историю',
++    description:
++        'Один пишет первый абзац, другой — следующий. Без плана, просто по очереди. Посмотрите, что получится.',
++    emoji: '✍️',
++    categories: ['бесплатно', 'дома', 'весело'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'free_008',
++    title: 'Научите друг друга чему-нибудь',
++    description:
++        'Каждый выбирает что-то, что умеет, но партнёр — нет. По 10–15 минут на каждого: учите и учитесь.',
++    emoji: '🎓',
++    categories: ['бесплатно', 'дома', 'разговор'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'free_009',
++    title: 'Запустите бумажные кораблики',
++    description:
++        'Сделайте бумажные кораблики и запустите в ближайшей луже, фонтане или ручье. Детское и приятное.',
++    emoji: '⛵',
++    categories: ['бесплатно', 'прогулка', 'весело'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'free_010',
++    title: 'Составьте плейлист вместе',
++    description:
++        'По очереди добавляйте треки в общий плейлист. По одному. Без объяснений — просто музыка. Потом послушайте.',
++    emoji: '🎧',
++    categories: ['бесплатно', 'дома'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.calm,
++  ),
++
++  // ── БЫСТРО ────────────────────────────────────────────────────────────────
++
++  ActivityIdea(
++    id: 'quick_001',
++    title: 'Обнимитесь на 30 секунд без движения',
++    description:
++        'Встаньте и обнимитесь на ровно 30 секунд. Без слов, без телефона, без движения. Просто побудьте рядом.',
++    emoji: '🤗',
++    categories: ['быстро', 'романтика'],
++    durationMinutes: 5,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'quick_002',
++    title: 'Назовите по 3 комплимента',
++    description:
++        'Каждый называет другому 3 конкретных комплимента прямо сейчас. Не общих, а именно сегодняшних.',
++    emoji: '💐',
++    categories: ['быстро', 'романтика', 'разговор'],
++    durationMinutes: 10,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'quick_003',
++    title: 'Минута смешных фото',
++    description:
++        'У вас есть 1 минута и телефон. Сделайте как можно больше смешных фото друг друга.',
++    emoji: '🤳',
++    categories: ['быстро', 'весело'],
++    durationMinutes: 5,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'quick_004',
++    title: 'Угадайте мысль партнёра',
++    description:
++        'Каждый пишет на бумаге, о чём думает прямо сейчас. Потом угадывайте. Открывайте и сравнивайте.',
++    emoji: '🔮',
++    categories: ['быстро', 'разговор'],
++    durationMinutes: 10,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'quick_005',
++    title: 'Быстрый рисунок друг друга',
++    description:
++        'Возьмите бумагу. 2 минуты — рисуете партнёра. Нельзя смотреть на лист, только на человека.',
++    emoji: '🖊️',
++    categories: ['быстро', 'весело', 'дома'],
++    durationMinutes: 10,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'quick_006',
++    title: 'Скажите одно слово, которое описывает этот день',
++    description:
++        'Каждый произносит одно слово про сегодняшний день. Потом объясняет, почему именно оно.',
++    emoji: '💭',
++    categories: ['быстро', 'разговор'],
++    durationMinutes: 10,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'quick_007',
++    title: 'Спонтанная прогулка на 20 минут',
++    description:
++        'Оденьтесь и выйдите прямо сейчас. Куда угодно. 20 минут.',
++    emoji: '🌬️',
++    categories: ['быстро', 'прогулка', 'спонтанно', 'бесплатно'],
++    durationMinutes: 20,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.spontaneous,
++  ),
++
++  ActivityIdea(
++    id: 'quick_008',
++    title: 'Поиграйте в крестики-нолики',
++    description:
++        'Достаточно листа бумаги и ручки. Играйте лучше из 5.',
++    emoji: '❌',
++    categories: ['быстро', 'весело', 'дома'],
++    durationMinutes: 10,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'quick_009',
++    title: 'Придумайте общего персонажа',
++    description:
++        'За 5 минут придумайте персонажа вместе: имя, характер, суперсила, слабость. По очереди добавляйте детали.',
++    emoji: '🦸',
++    categories: ['быстро', 'весело'],
++    durationMinutes: 15,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.fun,
++  ),
++
++  // ── РОМАНТИКА ─────────────────────────────────────────────────────────────
++
++  ActivityIdea(
++    id: 'romantic_001',
++    title: 'Воспроизведите первое свидание',
++    description:
++        'Вспомните, что вы делали на первом свидании. Попробуйте воспроизвести — туда же, то же самое. Или близко к этому.',
++    emoji: '💞',
++    categories: ['романтика', 'новые впечатления'],
++    durationMinutes: 120,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'romantic_002',
++    title: 'Напишите партнёру письмо от руки',
++    description:
++        'Напишите письмо от руки — не в телефоне, а на бумаге. Про то, что чувствуете, что цените, чего хотите. Передайте в руки.',
++    emoji: '💌',
++    categories: ['романтика', 'глубокие разговоры'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'romantic_003',
++    title: 'Сделайте друг другу массаж',
++    description:
++        'Простой массаж плеч, спины или рук. 10–15 минут на каждого. Без спешки.',
++    emoji: '🤲',
++    categories: ['романтика', 'уют', 'дома'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'romantic_004',
++    title: 'Создайте "карту" ваших отношений',
++    description:
++        'Нарисуйте на листе бумаги важные моменты ваших отношений — как карту. Места, события, точки поворота.',
++    emoji: '🗺️',
++    categories: ['романтика', 'глубокие разговоры', 'дома'],
++    durationMinutes: 45,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.deep,
++    preparation: 'Нужна большая бумага и маркеры.',
++  ),
++
++  ActivityIdea(
++    id: 'romantic_005',
++    title: 'Спланируйте воображаемое путешествие',
++    description:
++        'Выберите страну, куда хотите поехать вместе. Составьте маршрут, найдите отель, ресторан, место. Как если бы поехали завтра.',
++    emoji: '🌏',
++    categories: ['романтика', 'разговор'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'romantic_006',
++    title: 'Слушайте музыку в темноте',
++    description:
++        'Выключите свет, лягте или сядьте рядом и слушайте музыку вместе. Один альбом или плейлист — без слов.',
++    emoji: '🌑',
++    categories: ['романтика', 'уют', 'дома'],
++    durationMinutes: 45,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'romantic_007',
++    title: 'Назовите 5 моментов, которые помните до сих пор',
++    description:
++        'Каждый называет 5 конкретных моментов в ваших отношениях, которые запомнились больше всего. Рассказывайте подробно.',
++    emoji: '🏅',
++    categories: ['романтика', 'глубокие разговоры'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  // ── ГЛУБОКИЕ РАЗГОВОРЫ ────────────────────────────────────────────────────
++
++  ActivityIdea(
++    id: 'deep_001',
++    title: 'Что для вас значит дом?',
++    description:
++        'Расскажите друг другу, что значит для вас "дом". Место? Ощущение? Человек? Поговорите об этом без спешки.',
++    emoji: '🏠',
++    categories: ['глубокие разговоры', 'разговор'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'deep_002',
++    title: 'Каким был самый трудный период вашей жизни?',
++    description:
++        'Поговорите о самом сложном периоде — до или после знакомства. Что помогло пройти через это?',
++    emoji: '🌊',
++    categories: ['глубокие разговоры', 'разговор'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'deep_003',
++    title: 'Что вы хотели бы изменить в прошлом?',
++    description:
++        'Каждый называет одно решение или момент, который хотел бы пережить иначе. Не осуждайте — просто слушайте.',
++    emoji: '⏪',
++    categories: ['глубокие разговоры', 'разговор'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'deep_004',
++    title: 'О чём вы мечтали в детстве?',
++    description:
++        'Расскажите, кем хотели стать и что хотели сделать, когда были маленькими. Что сбылось, а что нет?',
++    emoji: '🌈',
++    categories: ['глубокие разговоры', 'разговор'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'deep_005',
++    title: 'Что вам даёт сила?',
++    description:
++        'Каждый рассказывает о том, откуда берёт силы в трудные моменты — люди, действия, привычки, места.',
++    emoji: '💪',
++    categories: ['глубокие разговоры', 'разговор'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'deep_006',
++    title: 'Как изменились ваши приоритеты за последние 5 лет?',
++    description:
++        'Что было важным 5 лет назад и что важно сейчас? Где ваши ценности изменились, а где нет?',
++    emoji: '📊',
++    categories: ['глубокие разговоры', 'разговор'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'deep_007',
++    title: 'Что вы никогда не говорили партнёру?',
++    description:
++        'Каждый называет одну вещь, которую думал, но никогда не произносил вслух. Любую — маленькую или большую.',
++    emoji: '🤐',
++    categories: ['глубокие разговоры', 'разговор'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'deep_008',
++    title: 'Какую легаси вы хотите оставить?',
++    description:
++        'Чем вы хотите быть запомнены? Что хотите построить, создать или передать? Поговорите об этом.',
++    emoji: '🏗️',
++    categories: ['глубокие разговоры', 'разговор'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'deep_009',
++    title: 'Что значит для вас быть хорошим партнёром?',
++    description:
++        'Честный разговор: что каждый из вас считает важным в паре? Не критика, а ценности.',
++    emoji: '🤝',
++    categories: ['глубокие разговоры', 'разговор'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'deep_010',
++    title: 'Расскажите о человеке, который вас сформировал',
++    description:
++        'Кто был самым влиятельным человеком в вашей жизни до встречи с партнёром? Расскажите о нём или ней.',
++    emoji: '👥',
++    categories: ['глубокие разговоры', 'разговор'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  // ── УЮТ ──────────────────────────────────────────────────────────────────
++
++  ActivityIdea(
++    id: 'cozy_001',
++    title: 'Вечер под пледом с горячим шоколадом',
++    description:
++        'Приготовьте горячий шоколад или какао, заверните в пледы и ничего не делайте. Просто будьте рядом.',
++    emoji: '🍫',
++    categories: ['уют', 'дома'],
++    durationMinutes: 60,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  ActivityIdea(
++    id: 'cozy_002',
++    title: 'Слушайте дождь вместе',
++    description:
++        'Когда идёт дождь — откройте окно или балкон, сядьте рядом и просто слушайте. Никаких задач.',
++    emoji: '🌧️',
++    categories: ['уют', 'дома', 'романтика'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  ActivityIdea(
++    id: 'cozy_003',
++    title: 'Организуйте "ленивый день"',
++    description:
++        'Договоритесь, что сегодня — день без планов и обязанностей. Делайте только то, что хочется прямо сейчас.',
++    emoji: '😴',
++    categories: ['уют', 'дома'],
++    durationMinutes: 480,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  ActivityIdea(
++    id: 'cozy_004',
++    title: 'Накройте пледом диван и смотрите сериал',
++    description:
++        'Начните новый сериал или досмотрите незаконченный. Пледы, подушки, закуски. Выключите всё остальное.',
++    emoji: '🛋️',
++    categories: ['уют', 'дома'],
++    durationMinutes: 120,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  ActivityIdea(
++    id: 'cozy_005',
++    title: 'Зажгите ароматические свечи и расслабьтесь',
++    description:
++        'Зажгите свечи, выключите яркий свет, включите тихую музыку. Просто существуйте рядом.',
++    emoji: '🕯️',
++    categories: ['уют', 'дома', 'романтика'],
++    durationMinutes: 60,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  ActivityIdea(
++    id: 'cozy_006',
++    title: 'Сделайте горячие напитки и поговорите',
++    description:
++        'Заварите чай, кофе или что любите. Сядьте напротив друг друга и поговорите — о чём угодно. Без телефонов.',
++    emoji: '☕',
++    categories: ['уют', 'дома', 'разговор'],
++    durationMinutes: 45,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  ActivityIdea(
++    id: 'cozy_007',
++    title: 'Потанцуйте медленно дома',
++    description:
++        'Включите медленную музыку и потанцуйте — прямо в гостиной или на кухне. Без повода.',
++    emoji: '🕺',
++    categories: ['уют', 'дома', 'романтика'],
++    durationMinutes: 15,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'cozy_008',
++    title: 'Читайте рядом в тишине',
++    description:
++        'Каждый читает своё. Просто побудьте рядом в тишине. Иногда это самый тёплый вечер.',
++    emoji: '📖',
++    categories: ['уют', 'дома', 'бесплатно'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  // ── НОВЫЕ ВПЕЧАТЛЕНИЯ ─────────────────────────────────────────────────────
++
++  ActivityIdea(
++    id: 'new_001',
++    title: 'Попробуйте новое хобби вместе',
++    description:
++        'Выберите хобби, которое никто из вас не пробовал — лепка, скетчинг, оригами, макраме. Потратьте вечер на первые шаги.',
++    emoji: '🎯',
++    categories: ['новые впечатления', 'дома'],
++    durationMinutes: 90,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'new_002',
++    title: 'Сходите на выставку или концерт',
++    description:
++        'Найдите ближайшее мероприятие — выставку, концерт, лекцию, спектакль. Выберите что-то необычное для себя.',
++    emoji: '🎪',
++    categories: ['новые впечатления', 'прогулка'],
++    durationMinutes: 120,
++    budget: ActivityBudget.medium,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'new_003',
++    title: 'Посетите место, которое всегда откладывали',
++    description:
++        'Есть ли в вашем городе место, куда хотели, но не доходили? Сходите туда сегодня.',
++    emoji: '📍',
++    categories: ['новые впечатления', 'прогулка'],
++    durationMinutes: 120,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.spontaneous,
++  ),
++
++  ActivityIdea(
++    id: 'new_004',
++    title: 'Сыграйте в видеоигру, которую никогда не пробовали',
++    description:
++        'Найдите игру, в которую никто из вас не играл. Попробуйте пройти уровень вместе — даже если не получится.',
++    emoji: '🎮',
++    categories: ['новые впечатления', 'дома', 'весело'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'new_005',
++    title: 'Послушайте подкаст вместе и обсудите',
++    description:
++        'Выберите эпизод подкаста на интересную тему. Послушайте и поговорите о том, что узнали или не согласны.',
++    emoji: '🎙️',
++    categories: ['новые впечатления', 'разговор', 'дома'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'new_006',
++    title: 'Возьмите урок онлайн вместе',
++    description:
++        'Найдите бесплатный онлайн-курс или урок на YouTube по теме, которую хотели изучить. Смотрите и обсуждайте вместе.',
++    emoji: '💡',
++    categories: ['новые впечатления', 'дома', 'бесплатно'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'new_007',
++    title: 'Попробуйте кухню страны, которую не пробовали',
++    description:
++        'Найдите ресторан или кафе с кухней страны, которую никогда не пробовали. Закажите незнакомые блюда.',
++    emoji: '🌮',
++    categories: ['новые впечатления', 'еда', 'прогулка'],
++    durationMinutes: 90,
++    budget: ActivityBudget.medium,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'new_008',
++    title: 'Поиграйте в квест или детектив',
++    description:
++        'Найдите настольный квест или распечатайте сценарий детектива. Разыграйте вместе.',
++    emoji: '🔍',
++    categories: ['новые впечатления', 'дома', 'весело'],
++    durationMinutes: 90,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'new_009',
++    title: 'Посмотрите документальный фильм о месте, где хотите побывать',
++    description:
++        'Найдите документалку о стране или городе мечты. Потом обсудите, что хотите там увидеть.',
++    emoji: '🗾',
++    categories: ['новые впечатления', 'разговор', 'дома'],
++    durationMinutes: 90,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'new_010',
++    title: 'Сделайте что-то, чего боитесь вместе',
++    description:
++        'Что каждый из вас избегает? Высота, темнота, публичность. Найдите маленькую версию страха и встретьте вместе.',
++    emoji: '🎢',
++    categories: ['новые впечатления', 'глубокие разговоры'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.spontaneous,
++  ),
++
++  ActivityIdea(
++    id: 'new_011',
++    title: 'Попробуйте йогу или медитацию в первый раз',
++    description:
++        'Включите видео с базовой йогой или медитацией для начинающих. Делайте вместе, не смущаясь.',
++    emoji: '🧘',
++    categories: ['новые впечатления', 'дома', 'бесплатно'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'new_012',
++    title: 'Найдите в городе место, которого нет на Google Maps',
++    description:
++        'Погуляйте по дворам, переулкам, незаметным улицам. Найдите что-то, что не значится ни в каких списках.',
++    emoji: '🗝️',
++    categories: ['новые впечатления', 'прогулка', 'бесплатно'],
++    durationMinutes: 90,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.spontaneous,
++  ),
++
++  // ── ДОПОЛНИТЕЛЬНЫЕ СМЕШАННЫЕ ─────────────────────────────────────────────
++
++  ActivityIdea(
++    id: 'mix_001',
++    title: 'Составьте список "100 вещей до конца жизни"',
++    description:
++        'Каждый пишет свой список из 100 вещей, которые хочет сделать. Потом ищите пересечения.',
++    emoji: '📋',
++    categories: ['глубокие разговоры', 'разговор', 'дома'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'mix_002',
++    title: 'Играйте в ассоциации',
++    description:
++        'Один говорит слово, другой — первую ассоциацию. Не останавливайтесь. Через 10 минут разберите цепочку — что она говорит о каждом?',
++    emoji: '🔗',
++    categories: ['разговор', 'весело', 'быстро'],
++    durationMinutes: 15,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'mix_003',
++    title: 'Найдите кота или собаку погладить',
++    description:
++        'Пройдитесь по улице с целью найти и погладить животное. Звучит просто — но поднимает настроение.',
++    emoji: '🐱',
++    categories: ['прогулка', 'бесплатно', 'быстро'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'mix_004',
++    title: 'Договоритесь об одном новом ритуале',
++    description:
++        'Придумайте маленький ритуал, который будете делать каждый день или каждую неделю. Утренний кофе вместе, вечерняя прогулка, слово дня.',
++    emoji: '🔁',
++    categories: ['разговор', 'глубокие разговоры', 'дома'],
++    durationMinutes: 20,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'mix_005',
++    title: 'Пересмотрите старые видео с телефона',
++    description:
++        'Откройте архив телефона и просмотрите видео за последний год. Смейтесь, удивляйтесь, вспоминайте.',
++    emoji: '📱',
++    categories: ['дома', 'уют', 'бесплатно'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  ActivityIdea(
++    id: 'mix_006',
++    title: 'Придумайте вашу "фирменную" традицию',
++    description:
++        'Что-то только ваше: еда, место, фраза, жест. Придумайте одну вещь, которая будет означать "мы".',
++    emoji: '🎋',
++    categories: ['разговор', 'романтика', 'глубокие разговоры'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'mix_007',
++    title: 'Запустите бумажный самолёт с высоты',
++    description:
++        'Сложите бумажные самолёты и запустите их с балкона, крыши или любой возвышенности. Чей дальше?',
++    emoji: '✈️',
++    categories: ['прогулка', 'весело', 'быстро', 'бесплатно'],
++    durationMinutes: 15,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'mix_008',
++    title: 'Сыграйте в карты',
++    description:
++        'Классические карты подходят. Дурак, война, рыбалка — выберите игру и сыграйте несколько раундов.',
++    emoji: '🃏',
++    categories: ['дома', 'весело', 'бесплатно'],
++    durationMinutes: 45,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'mix_009',
++    title: 'Поиграйте в города',
++    description:
++        'Классическая игра в города. По очереди называйте города на последнюю букву предыдущего. Кто первый застрянет?',
++    emoji: '🌆',
++    categories: ['дома', 'весело', 'быстро', 'бесплатно'],
++    durationMinutes: 20,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'mix_010',
++    title: 'Организуйте "суббота без экранов"',
++    description:
++        'Проведите несколько часов без телефонов, ноутбуков и телевизора. Только вы и то, что можно делать руками.',
++    emoji: '📵',
++    categories: ['дома', 'уют', 'глубокие разговоры'],
++    durationMinutes: 180,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'mix_011',
++    title: 'Придумайте совместный проект',
++    description:
++        'Блог, канал, огород, ремонт, кулинарная книга — что-то, что вы хотели бы делать вместе долго. Обсудите и запишите первый шаг.',
++    emoji: '🚀',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 45,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'mix_012',
++    title: 'Сделайте что-то приятное для другого человека вместе',
++    description:
++        'Помогите соседу, напишите письмо другу, поддержите кого-то в сети. Маленький добрый поступок вместе — это хорошо.',
++    emoji: '💛',
++    categories: ['новые впечатления', 'разговор'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'mix_013',
++    title: 'Запишите 10 вещей, которые вас смешат',
++    description:
++        'Каждый вспоминает 10 вещей, которые вас обоих смешат: моменты, шутки, фразы. Перечитайте и посмейтесь.',
++    emoji: '😂',
++    categories: ['дома', 'разговор', 'весело'],
++    durationMinutes: 20,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'mix_014',
++    title: 'Побывайте в месте, где познакомились',
++    description:
++        'Вернитесь туда, где вы впервые встретились — кафе, парк, улица, вечеринка. Постойте там немного.',
++    emoji: '💫',
++    categories: ['романтика', 'прогулка', 'новые впечатления'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'mix_015',
++    title: 'Нарисуйте карту вашего района',
++    description:
++        'Попробуйте нарисовать по памяти карту улиц вокруг вашего дома. Без телефона. Сравните, кто точнее.',
++    emoji: '🗺️',
++    categories: ['дома', 'весело', 'быстро'],
++    durationMinutes: 20,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'mix_016',
++    title: 'Устройте "вопрос дня" на неделю',
++    description:
++        'Придумайте 7 глубоких вопросов и записайте. Отвечайте на один каждый вечер. Просто и по-настоящему.',
++    emoji: '📅',
++    categories: ['разговор', 'глубокие разговоры', 'быстро'],
++    durationMinutes: 15,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'mix_017',
++    title: 'Сыграйте в шахматы или шашки',
++    description:
++        'Классика. Доставайте доску — или найдите приложение и играйте вместе на одном устройстве.',
++    emoji: '♟️',
++    categories: ['дома', 'весело'],
++    durationMinutes: 45,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'mix_018',
++    title: 'Посетите блошиный рынок или барахолку',
++    description:
++        'Найдите ближайшую блошку или барахолку. Каждый выбирает одну вещь до 100 рублей. Потом объясняет почему.',
++    emoji: '🧸',
++    categories: ['новые впечатления', 'прогулка'],
++    durationMinutes: 120,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'mix_019',
++    title: 'Составьте совместный список фильмов на этот год',
++    description:
++        'Каждый называет 10 фильмов, которые хочет посмотреть. Объедините и договоритесь о порядке.',
++    emoji: '🎥',
++    categories: ['дома', 'разговор', 'быстро'],
++    durationMinutes: 20,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'mix_020',
++    title: 'Поговорите о вашей паре в третьем лице',
++    description:
++        'Представьте, что рассказываете о своих отношениях другу — как бы вы описали их? Что бы сказал партнёр о вас?',
++    emoji: '💬',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'mix_021',
++    title: 'Сделайте совместную тренировку на свежем воздухе',
++    description:
++        'Пробежка, скандинавская ходьба, подтягивания на турнике во дворе. Любая активность вместе на улице.',
++    emoji: '🏋️',
++    categories: ['прогулка', 'бесплатно', 'быстро'],
++    durationMinutes: 40,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'mix_022',
++    title: 'Обсудите 3 вещи, которые хотите улучшить в себе',
++    description:
++        'Не жалобы, а намерения. Каждый называет 3 качества или привычки, которые хочет развить. Как можно поддержать друг друга?',
++    emoji: '🎯',
++    categories: ['глубокие разговоры', 'разговор'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'mix_023',
++    title: 'Приготовьте что-нибудь из другой культуры',
++    description:
++        'Выберите рецепт из страны, которая вам нравится: Япония, Мексика, Грузия, Индия. Готовьте вместе с музыкой оттуда.',
++    emoji: '🍜',
++    categories: ['еда', 'дома', 'новые впечатления'],
++    durationMinutes: 90,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'mix_024',
++    title: 'Найдите в интернете место мечты и изучите его',
++    description:
++        'Откройте карту или YouTube и изучите место, куда хотите — улицы, достопримечательности, кафе. Представьте, что вы там.',
++    emoji: '🌐',
++    categories: ['разговор', 'новые впечатления', 'быстро'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'mix_025',
++    title: 'Поставьте цель на следующий месяц',
++    description:
++        'Каждый ставит одну личную цель на следующий месяц и одну совместную. Запишите и уберите в место, где увидите потом.',
++    emoji: '🎯',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 20,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'walk_014',
++    title: 'Покормите уток или голубей',
++    description:
++        'Возьмите хлеб или крупу и найдите водоём с утками или сквер с голубями. Детское и приятное.',
++    emoji: '🦆',
++    categories: ['прогулка', 'бесплатно', 'быстро'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.calm,
++  ),
++
++  ActivityIdea(
++    id: 'talk_014',
++    title: 'Расскажите о своей самой большой победе',
++    description:
++        'Каждый называет момент, которым гордится больше всего. Не обязательно грандиозный — важно, что он значит лично.',
++    emoji: '🏅',
++    categories: ['разговор', 'глубокие разговоры'],
++    durationMinutes: 20,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.any,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'home_016',
++    title: 'Сделайте перестановку в одной комнате',
++    description:
++        'Передвиньте мебель в комнате и посмотрите, как изменится ощущение. Иногда это меняет всё — без покупок.',
++    emoji: '🛋️',
++    categories: ['дома', 'новые впечатления'],
++    durationMinutes: 60,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.spontaneous,
++  ),
++
++  ActivityIdea(
++    id: 'home_017',
++    title: 'Составьте список "Что нас объединяет"',
++    description:
++        'Запишите всё, что у вас общее: интересы, привычки, ценности, воспоминания. Сколько наберёте?',
++    emoji: '🔗',
++    categories: ['дома', 'разговор', 'романтика'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.deep,
++  ),
++
++  ActivityIdea(
++    id: 'cozy_009',
++    title: 'Полежите и смотрите в потолок',
++    description:
++        'Лягте рядом и смотрите в потолок. Разговаривайте о чём угодно или молчите. Иногда самые важные разговоры случаются именно так.',
++    emoji: '🌙',
++    categories: ['уют', 'дома', 'разговор'],
++    durationMinutes: 30,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.cozy,
++  ),
++
++  ActivityIdea(
++    id: 'food_013',
++    title: 'Устройте "tapas" дома',
++    description:
++        'Приготовьте много маленьких закусок — по 3-4 кусочка каждой. Накройте стол как в испанском баре и пробуйте всё понемногу.',
++    emoji: '🥘',
++    categories: ['еда', 'дома', 'уют'],
++    durationMinutes: 60,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.fun,
++  ),
++
++  ActivityIdea(
++    id: 'surprise_009',
++    title: 'Купите цветы без повода',
++    description:
++        'Просто купите небольшой букет — один для другого. Не нужна причина. "Просто увидел и подумал о тебе".',
++    emoji: '💐',
++    categories: ['сюрприз', 'романтика'],
++    durationMinutes: 10,
++    budget: ActivityBudget.low,
++    locationType: ActivityLocationType.outside,
++    vibe: ActivityVibe.romantic,
++  ),
++
++  ActivityIdea(
++    id: 'new_013',
++    title: 'Попробуйте нарисовать мандалу вместе',
++    description:
++        'Возьмите бумагу и ручку, поставьте точку в центре. Рисуйте симметричные узоры, чередуясь — каждый добавляет линию.',
++    emoji: '🌸',
++    categories: ['новые впечатления', 'дома', 'уют'],
++    durationMinutes: 45,
++    budget: ActivityBudget.free,
++    locationType: ActivityLocationType.home,
++    vibe: ActivityVibe.calm,
++  ),
++];
++
++/// Все доступные категории.
++const List<String> kActivityCategories = [
++  'дома',
++  'прогулка',
++  'еда',
++  'разговор',
++  'сюрприз',
++  'бесплатно',
++  'быстро',
++  'романтика',
++  'глубокие разговоры',
++  'уют',
++  'новые впечатления',
++];
+diff --git a/pairapp_mobile/lib/shared/models/activity_idea.dart b/pairapp_mobile/lib/shared/models/activity_idea.dart
+new file mode 100644
+index 0000000..8a6413c
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/models/activity_idea.dart
+@@ -0,0 +1,129 @@
++/// Вид локации: дома, на улице/вне дома, любой.
++enum ActivityLocationType { home, outside, any }
++
++/// Вайб/настроение активности.
++enum ActivityVibe { calm, fun, romantic, deep, spontaneous, cozy }
++
++/// Уровень бюджета.
++enum ActivityBudget { free, low, medium }
++
++/// Локальная builtin-идея для пары.
++/// Хранится в памяти приложения, не в Firestore.
++class ActivityIdea {
++  const ActivityIdea({
++    required this.id,
++    required this.title,
++    required this.description,
++    required this.emoji,
++    required this.categories,
++    required this.durationMinutes,
++    required this.budget,
++    required this.locationType,
++    required this.vibe,
++    this.preparation,
++  });
++
++  final String id;
++  final String title;
++  final String description;
++  final String emoji;
++  final List<String> categories;
++  final int durationMinutes;
++  final ActivityBudget budget;
++  final ActivityLocationType locationType;
++  final ActivityVibe vibe;
++  final String? preparation;
++
++  /// Локализованная строка бюджета.
++  String get budgetLabel {
++    switch (budget) {
++      case ActivityBudget.free:
++        return 'Бесплатно';
++      case ActivityBudget.low:
++        return 'Недорого';
++      case ActivityBudget.medium:
++        return 'Средний бюджет';
++    }
++  }
++
++  /// Локализованная строка вайба.
++  String get vibeLabel {
++    switch (vibe) {
++      case ActivityVibe.calm:
++        return 'Спокойно';
++      case ActivityVibe.fun:
++        return 'Весело';
++      case ActivityVibe.romantic:
++        return 'Романтика';
++      case ActivityVibe.deep:
++        return 'Глубоко';
++      case ActivityVibe.spontaneous:
++        return 'Спонтанно';
++      case ActivityVibe.cozy:
++        return 'Уютно';
++    }
++  }
++
++  /// Строка длительности.
++  String get durationLabel {
++    if (durationMinutes < 60) return '${durationMinutes} мин';
++    final h = durationMinutes ~/ 60;
++    final m = durationMinutes % 60;
++    return m == 0 ? '${h} ч' : '${h} ч ${m} мин';
++  }
++
++  /// Сериализация для передачи в Cloud Function saveActivityIdeaSnapshot.
++  Map<String, dynamic> toSavePayload() {
++    return {
++      'localIdeaId': id,
++      'title': title,
++      'description': description,
++      'emoji': emoji,
++      'categories': categories,
++      'durationMinutes': durationMinutes,
++      'budgetLevel': _budgetToString(budget),
++      'locationType': _locationToString(locationType),
++      'vibe': _vibeToString(vibe),
++      if (preparation != null) 'preparation': preparation,
++    };
++  }
++
++  static String _budgetToString(ActivityBudget b) {
++    switch (b) {
++      case ActivityBudget.free:
++        return 'free';
++      case ActivityBudget.low:
++        return 'low';
++      case ActivityBudget.medium:
++        return 'medium';
++    }
++  }
++
++  static String _locationToString(ActivityLocationType l) {
++    switch (l) {
++      case ActivityLocationType.home:
++        return 'home';
++      case ActivityLocationType.outside:
++        return 'outside';
++      case ActivityLocationType.any:
++        return 'any';
++    }
++  }
++
++  static String _vibeToString(ActivityVibe v) {
++    switch (v) {
++      case ActivityVibe.calm:
++        return 'calm';
++      case ActivityVibe.fun:
++        return 'fun';
++      case ActivityVibe.romantic:
++        return 'romantic';
++      case ActivityVibe.deep:
++        return 'deep';
++      case ActivityVibe.spontaneous:
++        return 'spontaneous';
++      case ActivityVibe.cozy:
++        return 'cozy';
++    }
++  }
++}
+diff --git a/pairapp_mobile/lib/shared/models/saved_activity.dart b/pairapp_mobile/lib/shared/models/saved_activity.dart
+new file mode 100644
+index 0000000..3019286
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/models/saved_activity.dart
+@@ -0,0 +1,95 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++
++/// Сохранённая идея из Firestore activity_history.
++/// Парсит snapshot-документы source == "local_builtin".
++/// Null-safe для старых записей acceptActivity (у них нет snapshot-полей).
++class SavedActivity {
++  const SavedActivity({
++    required this.historyId,
++    required this.coupleId,
++    this.localIdeaId,
++    this.title,
++    this.description,
++    this.emoji,
++    this.categories = const [],
++    this.budgetLevel,
++    this.locationType,
++    this.vibe,
++    this.preparation,
++    this.savedBy,
++    this.savedAt,
++    // ── legacy acceptActivity поля ──
++    this.activityId,
++    this.chosenBy,
++    this.chosenAt,
++    this.source,
++  });
++
++  final String historyId;
++  final String coupleId;
++
++  // ── Snapshot поля (local_builtin) ──
++  final String? localIdeaId;
++  final String? title;
++  final String? description;
++  final String? emoji;
++  final List<String> categories;
++  final String? budgetLevel;
++  final String? locationType;
++  final String? vibe;
++  final String? preparation;
++  final String? savedBy;
++  final DateTime? savedAt;
++
++  // ── Legacy acceptActivity поля ──
++  final String? activityId;
++  final String? chosenBy;
++  final DateTime? chosenAt;
++  final String? source;
++
++  /// True если это snapshot локальной идеи (а не старая acceptActivity запись).
++  bool get isLocalSnapshot => source == 'local_builtin' && localIdeaId != null;
++
++  /// Отображаемое имя идеи (fallback для старых записей).
++  String get displayTitle => title ?? 'Активность';
++
++  /// Дата для отображения.
++  DateTime? get displayDate => savedAt ?? chosenAt;
++
++  factory SavedActivity.fromFirestore(
++      DocumentSnapshot<Map<String, dynamic>> doc) {
++    final d = doc.data() ?? {};
++    return SavedActivity(
++      historyId: doc.id,
++      coupleId: (d['coupleId'] as String?) ?? '',
++      localIdeaId: d['localIdeaId'] as String?,
++      title: d['title'] as String?,
++      description: d['description'] as String?,
++      emoji: d['emoji'] as String?,
++      categories: _parseStringList(d['categories']),
++      budgetLevel: d['budgetLevel'] as String?,
++      locationType: d['locationType'] as String?,
++      vibe: d['vibe'] as String?,
++      preparation: d['preparation'] as String?,
++      savedBy: d['savedBy'] as String?,
++      savedAt: _tsToDateTime(d['savedAt']),
++      activityId: d['activityId'] as String?,
++      chosenBy: d['chosenBy'] as String?,
++      chosenAt: _tsToDateTime(d['chosenAt']),
++      source: d['source'] as String?,
++    );
++  }
++
++  static DateTime? _tsToDateTime(dynamic value) {
++    if (value == null) return null;
++    if (value is Timestamp) return value.toDate();
++    return null;
++  }
++
++  static List<String> _parseStringList(dynamic value) {
++    if (value is List) {
++      return value.whereType<String>().toList();
++    }
++    return const [];
++  }
++}
+diff --git a/pairapp_mobile/lib/shared/services/activity_service.dart b/pairapp_mobile/lib/shared/services/activity_service.dart
+new file mode 100644
+index 0000000..e9a9586
+--- /dev/null
++++ b/pairapp_mobile/lib/shared/services/activity_service.dart
+@@ -0,0 +1,106 @@
++import 'dart:math';
++
++import 'package:cloud_firestore/cloud_firestore.dart';
++
++import '../data/activity_ideas_data.dart';
++import '../models/activity_idea.dart';
++import '../models/saved_activity.dart';
++import 'functions_service.dart';
++
++/// Результат попытки сохранить идею.
++enum SaveIdeaResult {
++  /// Идея успешно сохранена.
++  saved,
++
++  /// Идея уже была сохранена ранее.
++  alreadySaved,
++
++  /// Ошибка (сеть, CF и т.п.).
++  error,
++}
++
++/// Сервис для работы с builtin activity ideas и saved activities.
++class ActivityService {
++  ActivityService({
++    FirebaseFirestore? firestore,
++    FunctionsService? functions,
++  })  : _firestore = firestore ?? FirebaseFirestore.instance,
++        _functions = functions ?? FunctionsService();
++
++  final FirebaseFirestore _firestore;
++  final FunctionsService _functions;
++
++  // ── Локальные идеи ────────────────────────────────────────────────────────
++
++  /// Возвращает случайную идею. Если передан [category] — фильтрует по нему.
++  /// [excludeId] предотвращает повтор последней показанной идеи.
++  ActivityIdea randomIdea({String? category, String? excludeId}) {
++    var pool = kBuiltinActivityIdeas;
++
++    if (category != null && category.isNotEmpty) {
++      pool = pool.where((e) => e.categories.contains(category)).toList();
++    }
++
++    if (pool.isEmpty) pool = kBuiltinActivityIdeas;
++
++    // Убираем последнюю показанную идею, если в пуле больше одной.
++    final filtered =
++        pool.length > 1 ? pool.where((e) => e.id != excludeId).toList() : pool;
++
++    final idx = Random().nextInt(filtered.length);
++    return filtered[idx];
++  }
++
++  /// Список всех категорий.
++  List<String> get allCategories => kActivityCategories;
++
++  // ── Cloud Functions ────────────────────────────────────────────────────────
++
++  /// Сохраняет идею для текущей пары через CF `saveActivityIdeaSnapshot`.
++  /// Не делает прямого write в Firestore.
++  Future<SaveIdeaResult> saveIdea(ActivityIdea idea) async {
++    try {
++      final result = await _functions.call(
++        'saveActivityIdeaSnapshot',
++        idea.toSavePayload(),
++      );
++      if (result['alreadySaved'] == true) {
++        return SaveIdeaResult.alreadySaved;
++      }
++      return SaveIdeaResult.saved;
++    } catch (_) {
++      return SaveIdeaResult.error;
++    }
++  }
++
++  /// Удаляет сохранённую идею через CF `removeSavedActivityIdea`.
++  Future<bool> removeSaved(String historyId) async {
++    try {
++      await _functions.call(
++        'removeSavedActivityIdea',
++        {'historyId': historyId},
++      );
++      return true;
++    } catch (_) {
++      return false;
++    }
++  }
++
++  // ── Firestore stream ───────────────────────────────────────────────────────
++
++  /// Стрим сохранённых идей пары из `activity_history`.
++  ///
++  /// Query только по coupleId (без нового индекса).
++  /// Фильтрация source == "local_builtin" выполняется на клиенте.
++  Stream<List<SavedActivity>> watchSavedIdeas(String coupleId) {
++    return _firestore
++        .collection('activity_history')
++        .where('coupleId', isEqualTo: coupleId)
++        .orderBy('savedAt', descending: true)
++        .snapshots()
++        .map((snap) => snap.docs
++            .map(SavedActivity.fromFirestore)
++            .where((a) => a.isLocalSnapshot)
++            .toList());
++  }
++}

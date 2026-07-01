@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/issue.dart';
 import '../models/issue_message.dart';
@@ -85,40 +88,152 @@ class IssueService {
 
   Stream<List<IssueMessage>> watchIssueMessages(String issueId) {
     final trimmedIssueId = issueId.trim();
+    debugPrint('WATCH_ISSUE_MESSAGES_START issueId=$trimmedIssueId');
+
     if (trimmedIssueId.isEmpty) {
       return Stream.value(const <IssueMessage>[]);
     }
 
-    return _issuesRef.doc(trimmedIssueId).snapshots().asyncExpand((issueDoc) {
-      if (!issueDoc.exists) {
-        return Stream.value(const <IssueMessage>[]);
+    late final StreamController<List<IssueMessage>> controller;
+    StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
+        issueSubscription;
+    StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
+        messagesSubscription;
+    var lifecycleVersion = 0;
+    var messagesSubscriptionVersion = 0;
+
+    Future<void> cancelCurrentSubscriptions() async {
+      final issueToCancel = issueSubscription;
+      final messagesToCancel = messagesSubscription;
+      issueSubscription = null;
+      messagesSubscription = null;
+
+      await issueToCancel?.cancel();
+      await messagesToCancel?.cancel();
+    }
+
+    Future<void> replaceMessagesSubscription(
+      String? coupleId,
+      int listenVersion,
+    ) async {
+      final messageVersion = ++messagesSubscriptionVersion;
+      final previousSubscription = messagesSubscription;
+      messagesSubscription = null;
+
+      await previousSubscription?.cancel();
+
+      final isCurrentListener =
+          listenVersion == lifecycleVersion && controller.hasListener;
+      final isCurrentMessageSubscription =
+          messageVersion == messagesSubscriptionVersion;
+      if (controller.isClosed ||
+          !isCurrentListener ||
+          !isCurrentMessageSubscription) {
+        return;
       }
 
-      final issue = Issue.fromFirestore(issueDoc);
-      final coupleId = issue.coupleId.trim();
-      if (coupleId.isEmpty) {
-        return Stream.value(const <IssueMessage>[]);
+      final trimmedCoupleId = coupleId?.trim();
+      if (trimmedCoupleId == null || trimmedCoupleId.isEmpty) {
+        controller.add(const <IssueMessage>[]);
+        return;
       }
 
-      return _issueMessagesRef
-          .where('coupleId', isEqualTo: coupleId)
+      debugPrint(
+        'WATCH_ISSUE_MESSAGES_QUERY_START '
+        'issueId=$trimmedIssueId coupleId=$trimmedCoupleId',
+      );
+
+      messagesSubscription = _issueMessagesRef
+          .where('coupleId', isEqualTo: trimmedCoupleId)
           .where('issueId', isEqualTo: trimmedIssueId)
           .snapshots()
-          .map((snapshot) {
-        final messages = snapshot.docs
-            .map(IssueMessage.fromFirestore)
-            .where((message) => !message.isDeleted)
-            .toList();
+          .listen(
+        (snapshot) {
+          if (controller.isClosed ||
+              !controller.hasListener ||
+              listenVersion != lifecycleVersion ||
+              messageVersion != messagesSubscriptionVersion) {
+            return;
+          }
 
-        messages.sort((a, b) {
-          final aDate = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-          final bDate = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-          return aDate.compareTo(bDate);
-        });
+          final messages = snapshot.docs
+              .map(IssueMessage.fromFirestore)
+              .where((message) => !message.isDeleted)
+              .toList();
 
-        return messages;
-      });
-    });
+          messages.sort((a, b) {
+            final aDate = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+            final bDate = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+            return aDate.compareTo(bDate);
+          });
+
+          debugPrint('WATCH_ISSUE_MESSAGES_COUNT count=${messages.length}');
+
+          if (!controller.isClosed) {
+            controller.add(messages);
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          debugPrint('WATCH_ISSUE_MESSAGES_ERROR error=$error');
+          if (!controller.isClosed &&
+              controller.hasListener &&
+              listenVersion == lifecycleVersion &&
+              messageVersion == messagesSubscriptionVersion) {
+            controller.addError(error, stackTrace);
+          }
+        },
+      );
+    }
+
+    controller = StreamController<List<IssueMessage>>.broadcast(
+      onListen: () {
+        final listenVersion = ++lifecycleVersion;
+        messagesSubscriptionVersion++;
+        debugPrint('WATCH_ISSUE_MESSAGES_ON_LISTEN issueId=$trimmedIssueId');
+        unawaited(cancelCurrentSubscriptions());
+
+        issueSubscription = _issuesRef.doc(trimmedIssueId).snapshots().listen(
+          (issueDoc) {
+            if (controller.isClosed ||
+                !controller.hasListener ||
+                listenVersion != lifecycleVersion) {
+              return;
+            }
+
+            debugPrint(
+              'WATCH_ISSUE_MESSAGES_DOC_UPDATE issueId=$trimmedIssueId',
+            );
+
+            if (!issueDoc.exists) {
+              unawaited(replaceMessagesSubscription(null, listenVersion));
+              return;
+            }
+
+            final issue = Issue.fromFirestore(issueDoc);
+            unawaited(
+              replaceMessagesSubscription(issue.coupleId, listenVersion),
+            );
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            debugPrint('WATCH_ISSUE_MESSAGES_ERROR error=$error');
+            unawaited(replaceMessagesSubscription(null, listenVersion));
+            if (!controller.isClosed &&
+                controller.hasListener &&
+                listenVersion == lifecycleVersion) {
+              controller.addError(error, stackTrace);
+            }
+          },
+        );
+      },
+      onCancel: () {
+        lifecycleVersion++;
+        messagesSubscriptionVersion++;
+        debugPrint('WATCH_ISSUE_MESSAGES_ON_CANCEL issueId=$trimmedIssueId');
+        unawaited(cancelCurrentSubscriptions());
+      },
+    );
+
+    return controller.stream;
   }
 
   Future<String> createIssueMessage({
