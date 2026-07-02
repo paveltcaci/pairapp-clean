@@ -64,6 +64,9 @@ class CoupleService {
     return JoinCoupleResult(coupleId: result['coupleId'] as String);
   }
 
+  /// Leaves the current couple via Cloud Functions.
+  Future<void> leaveCouple() => _functions.call('leaveCouple');
+
   /// Real-time stream of a couple document.
   /// Emits `null` when the document does not exist.
   Stream<Couple?> watchCouple(String coupleId) =>

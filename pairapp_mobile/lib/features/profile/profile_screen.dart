@@ -7,6 +7,7 @@ import '../../shared/services/couple_service.dart';
 import '../../shared/services/user_service.dart';
 import '../../shared/widgets/app_card.dart';
 import '../../theme/app_colors.dart';
+import 'account_safety_screen.dart';
 import 'couple_settings_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -36,7 +37,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
       return _coupleService.watchCouple(coupleId).asyncMap((couple) async {
         if (couple == null) {
-          return _ProfileData(currentUser: currentUser, partner: null, couple: null);
+          return _ProfileData(
+            currentUser: currentUser,
+            partner: null,
+            couple: null,
+          );
         }
 
         final partnerId = couple.partnerAId == currentUser.id
@@ -48,7 +53,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
           partner = await _userService.getUserProfile(partnerId);
         }
 
-        return _ProfileData(currentUser: currentUser, partner: partner, couple: couple);
+        return _ProfileData(
+          currentUser: currentUser,
+          partner: partner,
+          couple: couple,
+        );
       });
     });
   }
@@ -87,8 +96,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     _buildAvatar(context, currentUser, partner),
                     const SizedBox(height: 24),
                     _buildMenuItems(context, currentUser, couple),
-                    const SizedBox(height: 20),
-                    _buildLeaveCoupleButton(context),
                     const SizedBox(height: 12),
                     _buildAccountLogoutButton(context),
                     const SizedBox(height: 24),
@@ -144,13 +151,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             child: const Row(
               children: [
-                Icon(Icons.edit_outlined,
-                    size: 14, color: AppColors.textSecondary),
+                Icon(
+                  Icons.edit_outlined,
+                  size: 14,
+                  color: AppColors.textSecondary,
+                ),
                 SizedBox(width: 6),
                 Text(
                   'Изменить',
-                  style:
-                  TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textSecondary,
+                  ),
                 ),
               ],
             ),
@@ -161,10 +173,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _buildAvatar(
-      BuildContext context,
-      AppUser? currentUser,
-      AppUser? partner,
-      ) {
+    BuildContext context,
+    AppUser? currentUser,
+    AppUser? partner,
+  ) {
     return Column(
       children: [
         Stack(
@@ -203,8 +215,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 shape: BoxShape.circle,
                 border: Border.all(color: AppColors.bgCard, width: 2),
               ),
-              child: const Icon(Icons.camera_alt_outlined,
-                  size: 13, color: AppColors.textSecondary),
+              child: const Icon(
+                Icons.camera_alt_outlined,
+                size: 13,
+                color: AppColors.textSecondary,
+              ),
             ),
           ],
         ),
@@ -224,8 +239,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           decoration: BoxDecoration(
             color: AppColors.purple.withValues(alpha: 0.15),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-                color: AppColors.purple.withValues(alpha: 0.3)),
+            border: Border.all(color: AppColors.purple.withValues(alpha: 0.3)),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -235,9 +249,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
               Text(
                 _coupleLabel(currentUser, partner),
                 style: const TextStyle(
-                    fontSize: 12,
-                    color: AppColors.purple,
-                    fontWeight: FontWeight.w500),
+                  fontSize: 12,
+                  color: AppColors.purple,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ],
           ),
@@ -246,20 +261,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Widget _buildMenuItems(BuildContext context, AppUser? currentUser, Couple? couple) {
+  Widget _buildMenuItems(
+    BuildContext context,
+    AppUser? currentUser,
+    Couple? couple,
+  ) {
     final language = currentUser?.language == 'en' ? 'English' : 'Русский';
     final items = [
       _MenuItem(
-          icon: Icons.people_outline, label: 'Настройки пары', hasArrow: true),
+        icon: Icons.people_outline,
+        label: 'Настройки пары',
+        hasArrow: true,
+      ),
       _MenuItem(
-          icon: Icons.notifications_outlined,
-          label: 'Уведомления',
-          hasArrow: true),
+        icon: Icons.security_outlined,
+        label: 'Аккаунт и безопасность',
+        hasArrow: true,
+      ),
+      _MenuItem(icon: Icons.notifications_outlined, label: 'Уведомления'),
       _MenuItem(icon: Icons.language_outlined, label: 'Язык', value: language),
+      _MenuItem(icon: Icons.help_outline, label: 'Поддержка'),
       _MenuItem(
-          icon: Icons.help_outline, label: 'Поддержка', hasArrow: true),
-      _MenuItem(
-          icon: Icons.info_outline, label: 'О приложении', value: 'v1.0.0'),
+        icon: Icons.info_outline,
+        label: 'О приложении',
+        value: 'v1.0.0',
+      ),
     ];
 
     return AppCard(
@@ -293,11 +319,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
               }
             };
           }
+          if (item.label == 'Аккаунт и безопасность') {
+            tap = () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AccountSafetyScreen()),
+              );
+            };
+          }
           return Column(
             children: [
               ListTile(
-                contentPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 4,
+                ),
                 leading: Container(
                   width: 36,
                   height: 36,
@@ -305,8 +341,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     color: AppColors.purple.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Icon(item.icon,
-                      color: AppColors.lavender, size: 18),
+                  child: Icon(item.icon, color: AppColors.lavender, size: 18),
                 ),
                 title: Text(
                   item.label,
@@ -317,55 +352,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 ),
                 trailing: item.hasArrow
-                    ? const Icon(Icons.arrow_forward_ios,
-                    size: 14, color: AppColors.textMuted)
+                    ? const Icon(
+                        Icons.arrow_forward_ios,
+                        size: 14,
+                        color: AppColors.textMuted,
+                      )
                     : item.value != null
                     ? Text(
-                  item.value!,
-                  style: const TextStyle(
-                      fontSize: 13,
-                      color: AppColors.textMuted),
-                )
+                        item.value!,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textMuted,
+                        ),
+                      )
                     : null,
-                onTap: tap ?? () {},
+                onTap: tap,
               ),
               if (i < items.length - 1)
-                const Divider(
-                    height: 1, indent: 68, endIndent: 16),
+                const Divider(height: 1, indent: 68, endIndent: 16),
             ],
           );
         }).toList(),
-      ),
-    );
-  }
-
-  Widget _buildLeaveCoupleButton(BuildContext context) {
-    return Opacity(
-      opacity: 0.6,
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 14),
-        decoration: BoxDecoration(
-          color: AppColors.roseAccent.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-              color: AppColors.roseAccent.withValues(alpha: 0.18)),
-        ),
-        child: const Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.logout, color: AppColors.roseAccent, size: 18),
-            SizedBox(width: 8),
-            Text(
-              'Выйти из пары — позже',
-              style: TextStyle(
-                color: AppColors.roseAccent,
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -377,10 +384,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
           context: context,
           builder: (_) => AlertDialog(
             backgroundColor: AppColors.bgCard,
-            shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            title: const Text('Выйти из аккаунта?',
-                style: TextStyle(color: AppColors.textPrimary)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+            title: const Text(
+              'Выйти из аккаунта?',
+              style: TextStyle(color: AppColors.textPrimary),
+            ),
             content: const Text(
               'Вы сможете снова войти по email и паролю.',
               style: TextStyle(color: AppColors.textSecondary),
@@ -388,16 +398,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context),
-                child: const Text('Отмена',
-                    style: TextStyle(color: AppColors.textMuted)),
+                child: const Text(
+                  'Отмена',
+                  style: TextStyle(color: AppColors.textMuted),
+                ),
               ),
               TextButton(
                 onPressed: () async {
                   Navigator.pop(context);
                   await _authService.signOut();
                 },
-                child: const Text('Выйти',
-                    style: TextStyle(color: AppColors.roseAccent)),
+                child: const Text(
+                  'Выйти',
+                  style: TextStyle(color: AppColors.roseAccent),
+                ),
               ),
             ],
           ),
@@ -414,8 +428,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
         child: const Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.exit_to_app_outlined,
-                color: AppColors.textSecondary, size: 18),
+            Icon(
+              Icons.exit_to_app_outlined,
+              color: AppColors.textSecondary,
+              size: 18,
+            ),
             SizedBox(width: 8),
             Text(
               'Выйти из аккаунта',

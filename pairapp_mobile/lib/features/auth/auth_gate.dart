@@ -111,9 +111,7 @@ class _LoadingScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return const Scaffold(
       backgroundColor: AppColors.bgDeep,
-      body: Center(
-        child: CircularProgressIndicator(color: AppColors.purple),
-      ),
+      body: Center(child: CircularProgressIndicator(color: AppColors.purple)),
     );
   }
 }
@@ -273,8 +271,39 @@ class _CoupleNotFoundScreen extends StatelessWidget {
   }
 }
 
-class _CoupleNotActiveScreen extends StatelessWidget {
+class _CoupleNotActiveScreen extends StatefulWidget {
   const _CoupleNotActiveScreen();
+
+  @override
+  State<_CoupleNotActiveScreen> createState() => _CoupleNotActiveScreenState();
+}
+
+class _CoupleNotActiveScreenState extends State<_CoupleNotActiveScreen> {
+  final _coupleService = CoupleService();
+  bool _isLoading = false;
+
+  Future<void> _leaveCouple() async {
+    if (_isLoading) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      await _coupleService.leaveCouple();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Не удалось выйти из пары. Попробуйте ещё раз.'),
+          backgroundColor: AppColors.roseAccent,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -317,9 +346,24 @@ class _CoupleNotActiveScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    'Обратись в поддержку или дождись активации пары.',
+                    'Эта пара больше не активна. Выйдите из пары, чтобы создать новую или подключиться по коду.',
                     style: Theme.of(context).textTheme.bodyMedium,
                     textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 32),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton(
+                      onPressed: _isLoading ? null : _leaveCouple,
+                      child: _isLoading
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Выйти из пары'),
+                    ),
                   ),
                 ],
               ),
